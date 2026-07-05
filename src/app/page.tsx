@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getTodayContext, getStreaks, jobMetrics } from "@/lib/services";
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
 import { todayStr, formatDateLong, daysBetween, nowTimeStr, timeToMin } from "@/lib/dates";
 import { Card, ScoreRing, LevelBadge, ProgressBar, DOMAIN_COLORS, Sparkline } from "@/components/ui";
 import { QuickActions } from "@/components/QuickActions";
@@ -9,13 +9,12 @@ import type { Sprint, Task } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-export default function CommandCenter() {
-  const db = getDb();
+export default async function CommandCenter() {
   const today = todayStr();
-  const ctx = getTodayContext(today);
-  const streaks = getStreaks();
-  const jobs = jobMetrics();
-  const sprint = db.prepare("SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get() as Sprint | undefined;
+  const ctx = await getTodayContext(today);
+  const streaks = await getStreaks();
+  const jobs = await jobMetrics();
+  const sprint = await q("SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<Sprint>();
   const sprintDay = sprint ? Math.max(daysBetween(sprint.start_date, today) + 1, 1) : 0;
   const sprintLen = sprint ? daysBetween(sprint.start_date, sprint.end_date) + 1 : 60;
 
@@ -23,17 +22,17 @@ export default function CommandCenter() {
   const nowMin = timeToMin(now);
 
   // Next reminder
-  const reminders = db.prepare("SELECT time, label FROM reminders WHERE enabled=1 ORDER BY time").all() as { time: string; label: string }[];
+  const reminders = await q("SELECT time, label FROM reminders WHERE enabled=1 ORDER BY time").all<{ time: string; label: string }>();
   const nextReminder = reminders.find((r) => timeToMin(r.time) > nowMin) || reminders[0];
 
   // Score history for sparkline
-  const history = db.prepare("SELECT score FROM daily_scores WHERE date < ? ORDER BY date DESC LIMIT 10").all(today) as { score: number }[];
+  const history = await q("SELECT score FROM daily_scores WHERE date < ? ORDER BY date DESC LIMIT 10").all<{ score: number }>(today);
   const scoreTrend = [...history.reverse().map((h) => h.score), ctx.score.score];
 
   // Entity groups
-  const clients = db.prepare("SELECT id, name FROM clients WHERE active=1 ORDER BY priority").all() as { id: number; name: string }[];
-  const projects = db.prepare("SELECT id, name FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END").all() as { id: number; name: string }[];
-  const todayTasks = db.prepare("SELECT * FROM tasks WHERE scheduled_date=? AND status NOT IN ('killed','done') ORDER BY priority").all(today) as Task[];
+  const clients = await q("SELECT id, name FROM clients WHERE active=1 ORDER BY priority").all<{ id: number; name: string }>();
+  const projects = await q("SELECT id, name FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END").all<{ id: number; name: string }>();
+  const todayTasks = await q("SELECT * FROM tasks WHERE scheduled_date=? AND status NOT IN ('killed','done') ORDER BY priority").all<Task>(today);
 
   const s = ctx.stats;
   const winning = ctx.score.level !== "below";

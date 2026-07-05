@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { q } from "./db";
 import { todayStr, weekStart, addDays, nowTimeStr } from "./dates";
 import { computeScore, getDayStats, saveDailyScore, safeJson } from "./scoring";
 import { computeAdaptation } from "./adaptation";
@@ -12,63 +12,63 @@ import type { WorkBlock, Task, DailyPlan, Sprint, WeeklyPlan, WeeklyTargets } fr
  * Telegram webhook use these same functions — one brain, many interfaces.
  */
 
-export function getTodayContext(date = todayStr()) {
-  const db = getDb();
-  const plan = db.prepare("SELECT * FROM daily_plans WHERE date=?").get(date) as DailyPlan | undefined;
-  const blocks = db.prepare("SELECT * FROM work_blocks WHERE date=? ORDER BY sort, start_time").all(date) as WorkBlock[];
-  const tasks = db.prepare("SELECT * FROM tasks WHERE scheduled_date=? AND status NOT IN ('killed') ORDER BY priority").all(date) as Task[];
-  const stats = getDayStats(date);
-  const score = computeScore(date);
+export async function getTodayContext(date = todayStr()) {
+  const plan = await q("SELECT * FROM daily_plans WHERE date=?").get<DailyPlan>(date);
+  const blocks = await q("SELECT * FROM work_blocks WHERE date=? ORDER BY sort, start_time").all<WorkBlock>(date);
+  const tasks = await q("SELECT * FROM tasks WHERE scheduled_date=? AND status NOT IN ('killed') ORDER BY priority").all<Task>(date);
+  const stats = await getDayStats(date);
+  const score = await computeScore(date);
   const now = nowTimeStr();
   const activeBlock = blocks.find((b) => b.status === "active") || null;
   const nextBlock = blocks.find((b) => (b.status === "upcoming" || b.status === "rescheduled") && b.end_time > now) || null;
   return { date, plan: plan ?? null, blocks, tasks, stats, score, activeBlock, nextBlock };
 }
 
-export function getWeeklySprintContext(date = todayStr()) {
-  const db = getDb();
+export async function getWeeklySprintContext(date = todayStr()) {
   const ws = weekStart(date);
-  const sprint = db.prepare("SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get() as Sprint | undefined;
-  const weeklyPlan = db.prepare("SELECT * FROM weekly_plans WHERE week_start=? ORDER BY id DESC LIMIT 1").get(ws) as WeeklyPlan | undefined;
+  const sprint = await q("SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<Sprint>();
+  const weeklyPlan = await q("SELECT * FROM weekly_plans WHERE week_start=? ORDER BY id DESC LIMIT 1").get<WeeklyPlan>(ws);
   const targets = weeklyPlan ? safeJson<Partial<WeeklyTargets>>(weeklyPlan.targets, {}) : {};
 
-  // Actuals for the week so far
   const from = ws;
   const to = addDays(ws, 6);
-  const sum = (type: string) =>
-    (db.prepare("SELECT COALESCE(SUM(value),0) as v FROM check_ins WHERE type=? AND date BETWEEN ? AND ?").get(type, from, to) as { v: number }).v;
-  const cnt = (type: string) =>
-    (db.prepare("SELECT COUNT(*) as v FROM check_ins WHERE type=? AND date BETWEEN ? AND ?").get(type, from, to) as { v: number }).v;
-  const gmailApps = (db.prepare("SELECT COUNT(*) as v FROM job_applications WHERE applied_date BETWEEN ? AND ? AND review_state NOT IN ('ignored','pending')").get(from, to) as { v: number }).v;
+  const sum = async (type: string) =>
+    Number((await q("SELECT COALESCE(SUM(value),0) as v FROM check_ins WHERE type=? AND date BETWEEN ? AND ?").get<{ v: number }>(type, from, to))?.v ?? 0);
+  const cnt = async (type: string) =>
+    Number((await q("SELECT COUNT(*) as v FROM check_ins WHERE type=? AND date BETWEEN ? AND ?").get<{ v: number }>(type, from, to))?.v ?? 0);
+  const gmailApps = Number(
+    (await q("SELECT COUNT(*) as v FROM job_applications WHERE applied_date BETWEEN ? AND ? AND review_state NOT IN ('ignored','pending')").get<{ v: number }>(from, to))?.v ?? 0
+  );
 
   const actuals = {
-    job_applications: sum("jobs") + gmailApps,
-    tailored_applications: sum("tailored"),
-    follow_ups: sum("followup"),
-    client_hours: Math.round((sum("client_minutes") / 60) * 10) / 10,
-    project_hours: Math.round((sum("project_minutes") / 60) * 10) / 10,
-    workouts: cnt("workout"),
-    walks: cnt("walk"),
-    meditations: cnt("meditation"),
-    journal_entries: (db.prepare("SELECT COUNT(*) as v FROM journal_entries WHERE date BETWEEN ? AND ?").get(from, to) as { v: number }).v,
-    blocks_completed: (db.prepare("SELECT COUNT(*) as v FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')").get(from, to) as { v: number }).v,
+    job_applications: (await sum("jobs")) + gmailApps,
+    tailored_applications: await sum("tailored"),
+    follow_ups: await sum("followup"),
+    client_hours: Math.round(((await sum("client_minutes")) / 60) * 10) / 10,
+    project_hours: Math.round(((await sum("project_minutes")) / 60) * 10) / 10,
+    workouts: await cnt("workout"),
+    walks: await cnt("walk"),
+    meditations: await cnt("meditation"),
+    journal_entries: Number((await q("SELECT COUNT(*) as v FROM journal_entries WHERE date BETWEEN ? AND ?").get<{ v: number }>(from, to))?.v ?? 0),
+    blocks_completed: Number(
+      (await q("SELECT COUNT(*) as v FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')").get<{ v: number }>(from, to))?.v ?? 0
+    ),
   };
 
   return { weekStart: ws, sprint: sprint ?? null, weeklyPlan: weeklyPlan ?? null, targets, actuals };
 }
 
-export function getKnowledgeBaseContext() {
-  const db = getDb();
+export async function getKnowledgeBaseContext() {
   return {
-    clients: db.prepare("SELECT * FROM clients ORDER BY priority, name").all(),
-    projects: db.prepare("SELECT * FROM projects ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium-high' THEN 1 ELSE 2 END, name").all(),
-    fitness: db.prepare("SELECT * FROM fitness_profiles WHERE id=1").get() ?? null,
-    rules: db.prepare("SELECT * FROM assistant_rules ORDER BY priority, id").all(),
-    aliases: db.prepare("SELECT * FROM entity_aliases ORDER BY alias").all(),
+    clients: await q("SELECT * FROM clients ORDER BY priority, name").all<import("./types").Client>(),
+    projects: await q("SELECT * FROM projects ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium-high' THEN 1 ELSE 2 END, name").all<import("./types").Project>(),
+    fitness: (await q("SELECT * FROM fitness_profiles WHERE id=1").get<import("./types").FitnessProfile>()) ?? null,
+    rules: await q("SELECT * FROM assistant_rules ORDER BY priority, id").all<import("./types").AssistantRule>(),
+    aliases: await q("SELECT * FROM entity_aliases ORDER BY alias").all<import("./types").EntityAlias>(),
   };
 }
 
-export function createTaskFromAssistant(input: {
+export async function createTaskFromAssistant(input: {
   title: string;
   notes?: string;
   domain?: string;
@@ -81,76 +81,81 @@ export function createTaskFromAssistant(input: {
   status?: string;
   scheduled_date?: string | null;
   recurring?: boolean;
-}) {
-  const db = getDb();
-  const r = db
-    .prepare(
-      `INSERT INTO tasks (title, notes, domain, entity_type, entity_id, entity_name, priority, effort_min, due_date, status, scheduled_date, recurring)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-    )
-    .run(
-      input.title,
-      input.notes ?? "",
-      input.domain ?? "backlog",
-      input.entity_type ?? null,
-      input.entity_id ?? null,
-      input.entity_name ?? null,
-      input.priority ?? 2,
-      input.effort_min ?? 45,
-      input.due_date ?? null,
-      input.status ?? "inbox",
-      input.scheduled_date ?? null,
-      input.recurring ? 1 : 0
-    );
-  return Number(r.lastInsertRowid);
+}): Promise<number> {
+  const r = await q(
+    `INSERT INTO tasks (title, notes, domain, entity_type, entity_id, entity_name, priority, effort_min, due_date, status, scheduled_date, recurring)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    input.title,
+    input.notes ?? "",
+    input.domain ?? "backlog",
+    input.entity_type ?? null,
+    input.entity_id ?? null,
+    input.entity_name ?? null,
+    input.priority ?? 2,
+    input.effort_min ?? 45,
+    input.due_date ?? null,
+    input.status ?? "inbox",
+    input.scheduled_date ?? null,
+    input.recurring ? 1 : 0
+  );
+  return r.lastInsertRowid;
 }
 
-export function logCheckIn(type: string, value: number, note = "", source = "app", date = todayStr()) {
-  const db = getDb();
-  db.prepare("INSERT INTO check_ins (date, type, value, note, source) VALUES (?,?,?,?,?)").run(date, type, value, note, source);
-  saveDailyScore(date);
-  return computeScore(date);
+export async function logCheckIn(type: string, value: number, note = "", source = "app", date = todayStr()) {
+  await q("INSERT INTO check_ins (date, type, value, note, source) VALUES (?,?,?,?,?)").run(date, type, value, note, source);
+  return saveDailyScore(date);
 }
 
-export function updateDailyPlan(date: string, patch: { mission?: string; adaptation_note?: string }) {
-  const db = getDb();
-  const existing = db.prepare("SELECT id FROM daily_plans WHERE date=?").get(date);
-  if (!existing) db.prepare("INSERT INTO daily_plans (date) VALUES (?)").run(date);
-  if (patch.mission !== undefined) db.prepare("UPDATE daily_plans SET mission=? WHERE date=?").run(patch.mission, date);
-  if (patch.adaptation_note !== undefined) db.prepare("UPDATE daily_plans SET adaptation_note=? WHERE date=?").run(patch.adaptation_note, date);
+export async function updateDailyPlan(date: string, patch: { mission?: string; adaptation_note?: string }) {
+  const existing = await q("SELECT id FROM daily_plans WHERE date=?").get(date);
+  if (!existing) await q("INSERT INTO daily_plans (date) VALUES (?)").run(date);
+  if (patch.mission !== undefined) await q("UPDATE daily_plans SET mission=? WHERE date=?").run(patch.mission, date);
+  if (patch.adaptation_note !== undefined) await q("UPDATE daily_plans SET adaptation_note=? WHERE date=?").run(patch.adaptation_note, date);
 }
 
-export function generateDailySummary(date = todayStr()) {
-  const stats = getDayStats(date);
-  const score = computeScore(date);
-  const adaptation = computeAdaptation(date);
-  saveDailyScore(date, { hard_truth: adaptation.hardTruth, adjustment: adaptation.adjustments.join(" "), mvw: adaptation.mvw });
+export async function generateDailySummary(date = todayStr()) {
+  const stats = await getDayStats(date);
+  const adaptation = await computeAdaptation(date);
+  const score = await saveDailyScore(date, {
+    hard_truth: adaptation.hardTruth,
+    adjustment: adaptation.adjustments.join(" "),
+    mvw: adaptation.mvw,
+  });
   return { date, stats, score, adaptation };
 }
 
-export function generateWeeklyReview(weekStartDate = weekStart(todayStr())) {
-  const db = getDb();
+export async function generateWeeklyReview(weekStartDate = weekStart(todayStr())) {
   const from = weekStartDate;
   const to = addDays(weekStartDate, 6);
-  const ctx = getWeeklySprintContext(weekStartDate);
+  const ctx = await getWeeklySprintContext(weekStartDate);
 
-  const scores = db.prepare("SELECT date, score, level FROM daily_scores WHERE date BETWEEN ? AND ? ORDER BY score DESC").all(from, to) as { date: string; score: number; level: string }[];
+  const scores = await q("SELECT date, score, level FROM daily_scores WHERE date BETWEEN ? AND ? ORDER BY score DESC").all<{
+    date: string;
+    score: number;
+    level: string;
+  }>(from, to);
   const best = scores[0];
   const worst = scores[scores.length - 1];
-  const derails = db.prepare("SELECT trigger, COUNT(*) as c FROM derail_events WHERE ts BETWEEN ? AND ? GROUP BY trigger ORDER BY c DESC").all(from + " 00:00:00", to + " 23:59:59") as { trigger: string; c: number }[];
-  const smokeAvg = (db.prepare("SELECT AVG(daily) as a FROM (SELECT date, SUM(value) as daily FROM check_ins WHERE type='smoke' AND date BETWEEN ? AND ? GROUP BY date)").get(from, to) as { a: number | null }).a;
+  const derails = await q(
+    "SELECT trigger, COUNT(*) as c FROM derail_events WHERE ts BETWEEN ? AND ? GROUP BY trigger ORDER BY c DESC"
+  ).all<{ trigger: string; c: number }>(from + " 00:00:00", to + " 23:59:59");
+  const smokeAvg = (
+    await q(
+      "SELECT AVG(daily) as a FROM (SELECT date, SUM(value) as daily FROM check_ins WHERE type='smoke' AND date BETWEEN ? AND ? GROUP BY date)"
+    ).get<{ a: number | null }>(from, to)
+  )?.a;
 
   const stats = {
     ...ctx.actuals,
     avg_score: scores.length ? Math.round(scores.reduce((a, s) => a + s.score, 0) / scores.length) : 0,
-    smoking_avg: smokeAvg ? Math.round(smokeAvg * 10) / 10 : null,
+    smoking_avg: smokeAvg ? Math.round(Number(smokeAvg) * 10) / 10 : null,
     gold_days: scores.filter((s) => s.level === "gold").length,
     silver_days: scores.filter((s) => s.level === "silver").length,
     bronze_days: scores.filter((s) => s.level === "bronze").length,
     below_days: scores.filter((s) => s.level === "below").length,
   };
 
-  // Deterministic recommendations from targets vs actuals
   const t = ctx.targets;
   const a = ctx.actuals;
   const doubleDown: string[] = [];
@@ -175,7 +180,7 @@ export function generateWeeklyReview(weekStartDate = weekStart(todayStr())) {
     next_week: nextWeek.join(" ") || "Raise the job target by 10%. Ship one project asset.",
   };
 
-  db.prepare(
+  await q(
     `INSERT INTO weekly_reviews (week_start, stats, best_day, worst_day, derail_trigger, double_down, kill, next_week)
      VALUES (?,?,?,?,?,?,?,?)
      ON CONFLICT(week_start) DO UPDATE SET stats=excluded.stats, best_day=excluded.best_day, worst_day=excluded.worst_day,
@@ -185,34 +190,44 @@ export function generateWeeklyReview(weekStartDate = weekStart(todayStr())) {
   return review;
 }
 
-export function getStreaks() {
-  const db = getDb();
+export async function getStreaks() {
   const today = todayStr();
-  const streak = (predicate: (date: string) => boolean): number => {
+
+  // Pull the last 60 days of relevant activity in three queries, then compute in memory.
+  const from = addDays(today, -60);
+  const checkins = await q("SELECT DISTINCT date, type FROM check_ins WHERE date >= ?").all<{ date: string; type: string }>(from);
+  const journals = await q("SELECT date FROM journal_entries WHERE date >= ?").all<{ date: string }>(from);
+  const gmailDays = await q(
+    "SELECT DISTINCT applied_date as date FROM job_applications WHERE applied_date >= ? AND review_state NOT IN ('ignored','pending')"
+  ).all<{ date: string }>(from);
+
+  const byType = new Map<string, Set<string>>();
+  for (const c of checkins) {
+    if (!byType.has(c.type)) byType.set(c.type, new Set());
+    byType.get(c.type)!.add(c.date);
+  }
+  const journalDays = new Set(journals.map((j) => j.date));
+  const jobDays = new Set([...(byType.get("jobs") ?? []), ...gmailDays.map((g) => g.date)]);
+
+  const streak = (has: (date: string) => boolean): number => {
     let s = 0;
     for (let i = 0; i < 60; i++) {
-      const d = addDays(today, -i - (i === 0 ? 0 : 0));
-      if (i === 0 && !predicate(d)) continue; // today not done yet doesn't break streak
-      if (predicate(d)) s++;
+      const d = addDays(today, -i);
+      if (i === 0 && !has(d)) continue; // today not done yet doesn't break streak
+      if (has(d)) s++;
       else if (i > 0) break;
     }
     return s;
   };
-  const hasCheckin = (type: string) => (date: string) =>
-    ((db.prepare("SELECT COUNT(*) as c FROM check_ins WHERE date=? AND type=?").get(date, type) as { c: number }).c) > 0;
-  const hasJournal = (date: string) =>
-    ((db.prepare("SELECT COUNT(*) as c FROM journal_entries WHERE date=?").get(date) as { c: number }).c) > 0;
+  const hasType = (type: string) => (date: string) => byType.get(type)?.has(date) ?? false;
+
   return {
-    walk: streak(hasCheckin("walk")),
-    workout: streak(hasCheckin("workout")),
-    meditation: streak(hasCheckin("meditation")),
-    smokeLogged: streak(hasCheckin("smoke")),
-    journal: streak(hasJournal),
-    jobs: streak((d) => {
-      const manual = (db.prepare("SELECT COALESCE(SUM(value),0) as v FROM check_ins WHERE date=? AND type='jobs'").get(d) as { v: number }).v;
-      const gmail = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE applied_date=? AND review_state NOT IN ('ignored','pending')").get(d) as { c: number }).c;
-      return manual + gmail > 0;
-    }),
+    walk: streak(hasType("walk")),
+    workout: streak(hasType("workout")),
+    meditation: streak(hasType("meditation")),
+    smokeLogged: streak(hasType("smoke")),
+    journal: streak((d) => journalDays.has(d)),
+    jobs: streak((d) => jobDays.has(d)),
   };
 }
 

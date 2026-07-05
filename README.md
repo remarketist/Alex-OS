@@ -31,8 +31,8 @@ habit/body tracker, and weekly CEO review — in one dark, tactical dashboard.
 ## Tech stack
 
 - **Next.js 16** (App Router) + **TypeScript** + **Tailwind CSS v4**
-- **SQLite** (better-sqlite3) — zero-config local persistence, auto-migrated and auto-seeded on first run
-- **Supabase-ready** — full Postgres schema in `supabase/migrations/0001_init.sql` for phase 2
+- **libSQL / Turso** — SQLite-dialect database. Local dev uses a file at `./data/alexos.db` (zero config); production uses a free hosted Turso database over HTTPS. Auto-migrated and auto-seeded on first run in both modes
+- **Cloudflare Workers** deploy via `@opennextjs/cloudflare` — free hosting (config in `wrangler.jsonc`)
 - **Telegram Bot API** — webhook command parser + state-aware scheduled reminders
 - **Gmail API (read-only)** — OAuth flow + detection/dedup pipeline, with a demo-sync fallback that exercises the real pipeline without credentials
 - **AI abstraction** (`src/lib/ai.ts`) — optional Anthropic-powered planning; deterministic fallbacks everywhere
@@ -44,7 +44,8 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-That's it. On first request the app creates `data/alexos.db`, migrates the schema, and seeds it
+That's it. On first request the app creates `data/alexos.db` (or your Turso database in
+production), migrates the schema, and seeds it
 with the full demo world: the "Stability & Momentum" 60-day sprint (day ~11), an active weekly
 plan with blocks for every day, 4 clients (Nayam Events, SI Lounge, The Saint Cocktail Bar,
 Sanki Ramen Bar), 8 personal projects, 10 days of check-ins/scores/journals, detected job
@@ -66,9 +67,9 @@ npx tsc --noEmit             # typecheck
 3. Point the webhook at your deployed app:
    `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<APP_URL>/api/telegram/webhook`
    (optionally add `&secret_token=<TELEGRAM_WEBHOOK_SECRET>`).
-4. Schedule `GET /api/cron/reminders` every 5 minutes:
-   - Vercel: `vercel.json` cron is already included.
-   - Anywhere else: `*/5 * * * * curl -s "$APP_URL/api/cron/reminders?key=$CRON_SECRET"`
+4. Schedule `GET /api/cron/reminders` every 5 minutes — easiest free option is
+   [cron-job.org](https://cron-job.org); a crontab
+   (`*/5 * * * * curl -s "$APP_URL/api/cron/reminders?key=$CRON_SECRET"`) works too.
 5. Use **Settings → Send test** to verify. Without a token, sends are logged as `mock` so the
    entire pipeline is testable first.
 
@@ -99,14 +100,28 @@ classification/dedup pipeline so the whole Jobs module works out of the box.
 > Privacy: the app only reads job-related emails for tracking. It never sends, deletes,
 > archives, labels, or modifies email.
 
-## Connect Supabase (phase 2)
+## Deploy free: Cloudflare Workers + Turso
 
-v1 intentionally runs on local SQLite (single user, zero setup). To move to Supabase:
+Total cost: $0/month (Cloudflare free plan + Turso free plan).
 
-1. Create a project, run `supabase/migrations/0001_init.sql` in the SQL editor.
-2. Set the Supabase env vars from `.env.example`.
-3. Port `src/lib/db.ts` call sites to the Supabase client (the schema is 1:1; all queries live
-   in `src/lib/*` and `src/app/api/**`, never in components).
+**1. Database (Turso)** — [turso.tech](https://turso.tech), sign in with GitHub:
+   - Create a database → copy its URL (`libsql://…`)
+   - Create an auth token for it
+
+**2. Hosting (Cloudflare)** — [dash.cloudflare.com](https://dash.cloudflare.com):
+   - Workers & Pages → **Create** → **Workers** → **Import a repository** → pick this repo
+   - Build command: `npx opennextjs-cloudflare build`
+   - Deploy command: `npx opennextjs-cloudflare deploy`
+   - After the first deploy: Worker → **Settings → Variables and Secrets** → add
+     `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `APP_URL` (the workers.dev URL you got)
+   - Redeploy (Deployments → retry) so the variables take effect
+
+**3. Reminders cron** — [cron-job.org](https://cron-job.org) (free):
+   - Create a job hitting `https://<your-worker>.workers.dev/api/cron/reminders?key=<CRON_SECRET>`
+     every 5 minutes (set `CRON_SECRET` as a Worker secret too)
+
+`supabase/migrations/0001_init.sql` is kept as a reference schema for an optional future
+Postgres/Supabase port; it is not needed for this deployment.
 
 ## Scoring
 
@@ -156,7 +171,7 @@ orchestration, payments/productization.
 
 **Known limitations**
 
-- SQLite means single-instance deploys (fine for personal use; use a persistent volume).
+- Single-user by design (auth comes with the multi-user phase — don't share the URL).
 - Gmail company/role extraction is heuristic — that's what the review queue is for.
 - Telegram reminders fire via polling cron (5-min granularity), not exact-time push.
 - Browser speech recognition is Chrome-family only; the text pipeline is the contract.

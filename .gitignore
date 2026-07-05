@@ -42,3 +42,7 @@ next-env.d.ts
 
 # local database
 data/
+
+# cloudflare build output
+.open-next/
+.wrangler/

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
+import type { InValue } from "@libsql/client";
 
 /**
  * Knowledge Base CRUD.
@@ -30,21 +31,20 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ entity: string }> }
 ) {
-  const db = getDb();
   const { entity } = await params;
   const body = await req.json();
 
   if (entity === "fitness") {
     const fields = ["goal", "workout_type", "constraints", "preferred_habits", "weekly_targets", "smoking_goal", "smoking_daily_target", "no_smoke_before", "walking_target", "meditation_target"];
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: InValue[] = [];
     for (const f of fields) {
       if (body[f] !== undefined) {
         sets.push(`${f}=?`);
         vals.push(body[f]);
       }
     }
-    if (sets.length) db.prepare(`UPDATE fitness_profiles SET ${sets.join(", ")} WHERE id=1`).run(...vals);
+    if (sets.length) await q(`UPDATE fitness_profiles SET ${sets.join(", ")} WHERE id=1`).run(...vals);
     return NextResponse.json({ ok: true });
   }
 
@@ -53,7 +53,7 @@ export async function POST(
 
   if (body.id) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: InValue[] = [];
     for (const f of spec.fields) {
       if (body[f] !== undefined) {
         sets.push(`${f}=?`);
@@ -62,27 +62,26 @@ export async function POST(
     }
     if (!sets.length) return NextResponse.json({ error: "no fields" }, { status: 400 });
     vals.push(body.id);
-    db.prepare(`UPDATE ${spec.table} SET ${sets.join(", ")} WHERE id=?`).run(...vals);
+    await q(`UPDATE ${spec.table} SET ${sets.join(", ")} WHERE id=?`).run(...vals);
     return NextResponse.json({ ok: true, id: body.id });
   }
 
   const present = spec.fields.filter((f) => body[f] !== undefined);
   if (!present.length) return NextResponse.json({ error: "no fields" }, { status: 400 });
-  const r = db
-    .prepare(`INSERT INTO ${spec.table} (${present.join(",")}) VALUES (${present.map(() => "?").join(",")})`)
-    .run(...present.map((f) => body[f]));
-  return NextResponse.json({ ok: true, id: Number(r.lastInsertRowid) });
+  const r = await q(
+    `INSERT INTO ${spec.table} (${present.join(",")}) VALUES (${present.map(() => "?").join(",")})`
+  ).run(...present.map((f) => body[f] as InValue));
+  return NextResponse.json({ ok: true, id: r.lastInsertRowid });
 }
 
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ entity: string }> }
 ) {
-  const db = getDb();
   const { entity } = await params;
   const { id } = await req.json();
   const spec = TABLES[entity];
   if (!spec || !id) return NextResponse.json({ error: "bad request" }, { status: 400 });
-  db.prepare(`DELETE FROM ${spec.table} WHERE id=?`).run(id);
+  await q(`DELETE FROM ${spec.table} WHERE id=?`).run(id);
   return NextResponse.json({ ok: true });
 }

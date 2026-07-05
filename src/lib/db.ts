@@ -1,7 +1,17 @@
-import Database from "better-sqlite3";
+import { createClient, type Client, type InValue } from "@libsql/client";
 import path from "path";
 import fs from "fs";
 import { seed } from "./seed";
+
+/**
+ * Data layer — libSQL (SQLite dialect), async everywhere.
+ *
+ * - Production (free hosting): set TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN) and the
+ *   app talks to a hosted Turso database over HTTPS — works on Vercel/Cloudflare.
+ * - Local dev: no env needed; falls back to a local file at ./data/alexos.db.
+ *
+ * Schema is auto-migrated and demo data auto-seeded on first use in both modes.
+ */
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS settings (
@@ -170,6 +180,7 @@ CREATE TABLE IF NOT EXISTS check_ins (
   source TEXT DEFAULT 'app',
   created_at TEXT DEFAULT (datetime('now'))
 );
+
 CREATE INDEX IF NOT EXISTS idx_checkins_date ON check_ins(date);
 
 CREATE TABLE IF NOT EXISTS journal_entries (
@@ -285,19 +296,63 @@ CREATE TABLE IF NOT EXISTS job_application_events (
 );
 `;
 
-let _db: Database.Database | null = null;
+let _client: Client | null = null;
+let _ready: Promise<void> | null = null;
 
-export function getDb(): Database.Database {
-  if (_db) return _db;
-  const dir = path.join(process.cwd(), "data");
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, "alexos.db");
-  _db = new Database(file);
-  _db.pragma("journal_mode = WAL");
-  _db.exec(SCHEMA);
-  const hasSprint = _db.prepare("SELECT COUNT(*) as c FROM sprints").get() as {
-    c: number;
+function client(): Client {
+  if (_client) return _client;
+  const url = process.env.TURSO_DATABASE_URL;
+  if (url) {
+    _client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
+  } else {
+    const dir = path.join(process.cwd(), "data");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    _client = createClient({ url: `file:${path.join(dir, "alexos.db")}` });
+  }
+  return _client;
+}
+
+/** Raw executor used during init/seed (bypasses the ready gate). */
+async function rawRun(sql: string, args: InValue[] = []): Promise<{ lastInsertRowid: number }> {
+  const r = await client().execute({ sql, args });
+  return { lastInsertRowid: Number(r.lastInsertRowid ?? 0) };
+}
+
+async function init(): Promise<void> {
+  const c = client();
+  const statements = SCHEMA.split(/;\s*\n/).map((s) => s.trim()).filter(Boolean);
+  for (const s of statements) await c.execute(s);
+  const r = await c.execute("SELECT COUNT(*) as c FROM sprints");
+  if (Number(r.rows[0].c) === 0) await seed(rawRun);
+}
+
+function ready(): Promise<void> {
+  if (!_ready) _ready = init();
+  return _ready;
+}
+
+export interface Stmt {
+  run(...args: InValue[]): Promise<{ lastInsertRowid: number }>;
+  get<T = Record<string, unknown>>(...args: InValue[]): Promise<T | undefined>;
+  all<T = Record<string, unknown>>(...args: InValue[]): Promise<T[]>;
+}
+
+/** SQL statement helper — same shape as the old better-sqlite3 prepare(), but async. */
+export function q(sql: string): Stmt {
+  return {
+    async run(...args: InValue[]) {
+      await ready();
+      return rawRun(sql, args);
+    },
+    async get<T>(...args: InValue[]) {
+      await ready();
+      const r = await client().execute({ sql, args });
+      return r.rows[0] as T | undefined;
+    },
+    async all<T>(...args: InValue[]) {
+      await ready();
+      const r = await client().execute({ sql, args });
+      return r.rows as unknown as T[];
+    },
   };
-  if (hasSprint.c === 0) seed(_db);
-  return _db;
 }

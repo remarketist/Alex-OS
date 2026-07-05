@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
+import type { InValue } from "@libsql/client";
 
 const FIELDS = ["scan_start", "included_keywords", "excluded_keywords", "ignored_senders", "ignored_companies"];
 
 export async function PATCH(req: NextRequest) {
-  const db = getDb();
   const body = await req.json();
   const sets: string[] = [];
-  const vals: unknown[] = [];
+  const vals: InValue[] = [];
   for (const f of FIELDS) {
     if (body[f] !== undefined) {
       sets.push(`${f}=?`);
@@ -15,6 +15,6 @@ export async function PATCH(req: NextRequest) {
     }
   }
   if (!sets.length) return NextResponse.json({ error: "no fields" }, { status: 400 });
-  db.prepare(`UPDATE gmail_connections SET ${sets.join(", ")} WHERE id=1`).run(...vals);
+  await q(`UPDATE gmail_connections SET ${sets.join(", ")} WHERE id=1`).run(...vals);
   return NextResponse.json({ ok: true });
 }

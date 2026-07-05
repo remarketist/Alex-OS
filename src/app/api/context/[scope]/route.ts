@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTodayContext, getWeeklySprintContext, getKnowledgeBaseContext } from "@/lib/services";
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
 
 /**
  * Hermes-ready read API.
@@ -17,17 +17,15 @@ export async function GET(
   const date = req.nextUrl.searchParams.get("date") || undefined;
   switch (scope) {
     case "today":
-      return NextResponse.json(getTodayContext(date));
+      return NextResponse.json(await getTodayContext(date));
     case "week":
-      return NextResponse.json(getWeeklySprintContext(date));
+      return NextResponse.json(await getWeeklySprintContext(date));
     case "kb":
-      return NextResponse.json(getKnowledgeBaseContext());
-    case "derail": {
-      const db = getDb();
+      return NextResponse.json(await getKnowledgeBaseContext());
+    case "derail":
       return NextResponse.json({
-        events: db.prepare("SELECT * FROM derail_events ORDER BY ts DESC LIMIT 20").all(),
+        events: await q("SELECT * FROM derail_events ORDER BY ts DESC LIMIT 20").all(),
       });
-    }
     default:
       return NextResponse.json({ error: "unknown scope" }, { status: 400 });
   }

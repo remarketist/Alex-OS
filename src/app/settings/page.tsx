@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
 import { getTelegramConfig } from "@/lib/telegram";
 import { gmailEnvConfigured } from "@/lib/gmail";
 import { SettingsClient } from "./SettingsClient";
@@ -6,13 +6,14 @@ import type { Settings, Reminder, GmailConnection, TelegramMessage } from "@/lib
 
 export const dynamic = "force-dynamic";
 
-export default function SettingsPage() {
-  const db = getDb();
-  const settings = db.prepare("SELECT * FROM settings WHERE id=1").get() as Settings;
-  const reminders = db.prepare("SELECT * FROM reminders ORDER BY time").all() as Reminder[];
-  const gmail = db.prepare("SELECT id, email, status, last_sync, scan_start, included_keywords, excluded_keywords, ignored_senders, ignored_companies FROM gmail_connections WHERE id=1").get() as GmailConnection;
-  const tgConfig = getTelegramConfig();
-  const tgMessages = db.prepare("SELECT * FROM telegram_messages ORDER BY id DESC LIMIT 12").all() as TelegramMessage[];
+export default async function SettingsPage() {
+  const settings = (await q("SELECT * FROM settings WHERE id=1").get<Settings>())!;
+  const reminders = await q("SELECT * FROM reminders ORDER BY time").all<Reminder>();
+  const gmail = (await q(
+    "SELECT id, email, status, last_sync, scan_start, included_keywords, excluded_keywords, ignored_senders, ignored_companies FROM gmail_connections WHERE id=1"
+  ).get<GmailConnection>())!;
+  const tgConfig = await getTelegramConfig();
+  const tgMessages = await q("SELECT * FROM telegram_messages ORDER BY id DESC LIMIT 12").all<TelegramMessage>();
 
   return (
     <SettingsClient

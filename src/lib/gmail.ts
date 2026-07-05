@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { q } from "./db";
 import { todayStr, addDays } from "./dates";
 import { sendTelegramMessage } from "./telegram";
 
@@ -126,7 +126,6 @@ export function classifyEmail(e: DetectedEmail): Detection {
 }
 
 function extractCompanyRole(e: DetectedEmail): { company: string; role: string } {
-  // "Thank you for applying to OLIPOP" / "Your application to Deel" / "Application received — WHOOP"
   const s = e.subject;
   let company = "";
   let role = "";
@@ -149,34 +148,36 @@ function senderDomain(sender: string): string {
 
 // ---- Dedup + persistence ----
 
-export function upsertDetection(e: DetectedEmail, d: Detection): "added" | "updated" | "duplicate" | "queued" {
-  const db = getDb();
-  const conn = db.prepare("SELECT ignored_senders, ignored_companies FROM gmail_connections WHERE id=1").get() as
-    | { ignored_senders: string; ignored_companies: string } | undefined;
+export async function upsertDetection(e: DetectedEmail, d: Detection): Promise<"added" | "updated" | "duplicate" | "queued"> {
+  const conn = await q("SELECT ignored_senders, ignored_companies FROM gmail_connections WHERE id=1").get<{
+    ignored_senders: string;
+    ignored_companies: string;
+  }>();
   const ignoredSenders = (conn?.ignored_senders || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   const ignoredCompanies = (conn?.ignored_companies || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   if (ignoredSenders.some((s) => e.sender.toLowerCase().includes(s))) return "duplicate";
   if (ignoredCompanies.includes(d.company.toLowerCase())) return "duplicate";
 
   // Dedup: thread id, then message id, then same company+role within 3 days
-  const byThread = db.prepare("SELECT id FROM job_applications WHERE gmail_thread_id != '' AND gmail_thread_id = ?").get(e.threadId) as { id: number } | undefined;
-  const byMsg = db.prepare("SELECT id FROM job_applications WHERE gmail_message_id != '' AND gmail_message_id = ?").get(e.messageId) as { id: number } | undefined;
-  const byCompany = db
-    .prepare("SELECT id FROM job_applications WHERE LOWER(company)=LOWER(?) AND (role='' OR LOWER(role)=LOWER(?)) AND ABS(julianday(applied_date)-julianday(?)) <= 3")
-    .get(d.company, d.role, e.date) as { id: number } | undefined;
+  const byThread = await q("SELECT id FROM job_applications WHERE gmail_thread_id != '' AND gmail_thread_id = ?").get<{ id: number }>(e.threadId);
+  const byMsg = await q("SELECT id FROM job_applications WHERE gmail_message_id != '' AND gmail_message_id = ?").get<{ id: number }>(e.messageId);
+  const byCompany = await q(
+    "SELECT id FROM job_applications WHERE LOWER(company)=LOWER(?) AND (role='' OR LOWER(role)=LOWER(?)) AND ABS(julianday(applied_date)-julianday(?)) <= 3"
+  ).get<{ id: number }>(d.company, d.role, e.date);
 
   const existing = byThread || byMsg || (d.kind === "application" ? byCompany : undefined);
 
   if (d.kind === "reply") {
-    // Attach reply to existing application (by thread or company)
-    const target = byThread || (db.prepare("SELECT id FROM job_applications WHERE LOWER(company)=LOWER(?) ORDER BY applied_date DESC LIMIT 1").get(d.company) as { id: number } | undefined);
+    const target =
+      byThread ||
+      (await q("SELECT id FROM job_applications WHERE LOWER(company)=LOWER(?) ORDER BY applied_date DESC LIMIT 1").get<{ id: number }>(d.company));
     if (target) {
       // Same reply already processed (same subject on same application) → no-op
-      const seen = db.prepare("SELECT id FROM job_application_events WHERE application_id=? AND detail=?").get(target.id, e.subject);
+      const seen = await q("SELECT id FROM job_application_events WHERE application_id=? AND detail=?").get<{ id: number }>(target.id, e.subject);
       if (seen) return "duplicate";
       const status = d.replyType === "Interview" ? "interview" : d.replyType === "Assessment" ? "assessment" : d.replyType === "Rejection" ? "rejected" : d.replyType === "Follow-up Needed" ? "followup" : "replied";
-      db.prepare("UPDATE job_applications SET status=?, reply_type=?, last_email_date=? WHERE id=?").run(status, d.replyType, e.date, target.id);
-      db.prepare("INSERT INTO job_application_events (application_id, type, detail) VALUES (?,?,?)").run(target.id, d.replyType.toLowerCase(), e.subject);
+      await q("UPDATE job_applications SET status=?, reply_type=?, last_email_date=? WHERE id=?").run(status, d.replyType, e.date, target.id);
+      await q("INSERT INTO job_application_events (application_id, type, detail) VALUES (?,?,?)").run(target.id, d.replyType.toLowerCase(), e.subject);
       return "updated";
     }
     return "duplicate";
@@ -185,7 +186,7 @@ export function upsertDetection(e: DetectedEmail, d: Detection): "added" | "upda
   if (existing) return "duplicate";
 
   const reviewState = d.confidence >= 0.8 ? "auto" : "pending";
-  db.prepare(
+  await q(
     `INSERT INTO job_applications (company, role, applied_date, source, status, confidence, review_state, email_subject, sender, gmail_message_id, gmail_thread_id, last_email_date)
      VALUES (?,?,?,?,'applied',?,?,?,?,?,?,?)`
   ).run(d.company, d.role, e.date, d.source, d.confidence, reviewState, e.subject, e.sender, e.messageId, e.threadId, e.date);
@@ -195,19 +196,22 @@ export function upsertDetection(e: DetectedEmail, d: Detection): "added" | "upda
 // ---- Sync ----
 
 export async function runGmailSync(mode: "manual" | "scheduled" | "demo"): Promise<{ scanned: number; detected: number; notes: string }> {
-  const db = getDb();
   let scanned = 0;
   let detected = 0;
   let notes = "";
 
   if (mode === "demo" || !gmailEnvConfigured()) {
-    const result = runDemoSync();
+    const result = await runDemoSync();
     scanned = result.scanned;
     detected = result.detected;
     notes = "Demo sync — mock detections. Connect Gmail for real scanning.";
   } else {
-    const conn = db.prepare("SELECT tokens, scan_start, included_keywords, excluded_keywords FROM gmail_connections WHERE id=1").get() as
-      | { tokens: string; scan_start: string; included_keywords: string; excluded_keywords: string } | undefined;
+    const conn = await q("SELECT tokens, scan_start, included_keywords, excluded_keywords FROM gmail_connections WHERE id=1").get<{
+      tokens: string;
+      scan_start: string;
+      included_keywords: string;
+      excluded_keywords: string;
+    }>();
     if (!conn?.tokens) return { scanned: 0, detected: 0, notes: "Gmail not connected." };
     const tokens = JSON.parse(conn.tokens) as { refresh_token: string };
     const accessToken = await refreshAccessToken(tokens.refresh_token);
@@ -218,17 +222,17 @@ export async function runGmailSync(mode: "manual" | "scheduled" | "demo"): Promi
     for (const e of emails) {
       const d = classifyEmail(e);
       if (d.kind === "none") continue;
-      const result = upsertDetection(e, d);
+      const result = await upsertDetection(e, d);
       if (result === "added" || result === "queued") detected++;
       if (result === "updated" && d.replyType && d.replyType !== "Follow-up Needed") {
         await sendTelegramMessage(`Job update detected: ${d.company} — ${d.role || "role"}. Type: ${d.replyType}. Open in Alex OS.`, "job_alert");
       }
     }
     notes = `Query: ${query}`;
-    db.prepare("UPDATE gmail_connections SET last_sync=datetime('now') WHERE id=1").run();
+    await q("UPDATE gmail_connections SET last_sync=datetime('now') WHERE id=1").run();
   }
 
-  db.prepare("INSERT INTO gmail_sync_runs (mode, scanned, detected, notes) VALUES (?,?,?,?)").run(mode, scanned, detected, notes);
+  await q("INSERT INTO gmail_sync_runs (mode, scanned, detected, notes) VALUES (?,?,?,?)").run(mode, scanned, detected, notes);
   return { scanned, detected, notes };
 }
 
@@ -278,7 +282,7 @@ async function fetchGmailMessages(accessToken: string, query: string): Promise<D
 }
 
 /** Demo sync: runs the real classification pipeline over realistic fake emails. */
-function runDemoSync(): { scanned: number; detected: number } {
+async function runDemoSync(): Promise<{ scanned: number; detected: number }> {
   const today = todayStr();
   const demo: DetectedEmail[] = [
     {
@@ -318,10 +322,10 @@ function runDemoSync(): { scanned: number; detected: number } {
   for (const e of demo) {
     const d = classifyEmail(e);
     if (d.kind === "none") continue;
-    const result = upsertDetection(e, d);
-    if (result !== "duplicate") detected++;
+    const result = await upsertDetection(e, d);
+    if (result === "added" || result === "queued") detected++;
     if (result === "updated" && d.replyType) {
-      void sendTelegramMessage(`Job update detected: ${d.company} — ${d.role || "role"}. Type: ${d.replyType}. Open in Alex OS.`, "job_alert");
+      await sendTelegramMessage(`Job update detected: ${d.company} — ${d.role || "role"}. Type: ${d.replyType}. Open in Alex OS.`, "job_alert");
     }
   }
   return { scanned: demo.length, detected };
@@ -329,29 +333,29 @@ function runDemoSync(): { scanned: number; detected: number } {
 
 // ---- Metrics ----
 
-export function jobMetrics() {
-  const db = getDb();
+export async function jobMetrics() {
   const today = todayStr();
-  const count = (from: string, to: string) =>
-    (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE applied_date >= ? AND applied_date <= ? AND review_state NOT IN ('ignored','pending')").get(from, to) as { c: number }).c;
-  const manual = (from: string, to: string) =>
-    (db.prepare("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='jobs' AND date >= ? AND date <= ?").get(from, to) as { c: number }).c;
+  const count = async (from: string, to: string) =>
+    Number((await q("SELECT COUNT(*) as c FROM job_applications WHERE applied_date >= ? AND applied_date <= ? AND review_state NOT IN ('ignored','pending')").get<{ c: number }>(from, to))?.c ?? 0);
+  const manual = async (from: string, to: string) =>
+    Number((await q("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='jobs' AND date >= ? AND date <= ?").get<{ c: number }>(from, to))?.c ?? 0);
 
-  const sprint = db.prepare("SELECT start_date, end_date FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get() as { start_date: string; end_date: string } | undefined;
+  const sprint = await q("SELECT start_date, end_date FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<{ start_date: string; end_date: string }>();
   const weekAgo = addDays(today, -6);
   const monthAgo = addDays(today, -29);
   const sprintStart = sprint?.start_date || monthAgo;
 
-  const sprintTotal = count(sprintStart, today) + manual(sprintStart, today);
-  const activeDays = (db.prepare("SELECT COUNT(DISTINCT applied_date) as c FROM job_applications WHERE applied_date >= ?").get(sprintStart) as { c: number }).c || 1;
+  const sprintTotal = (await count(sprintStart, today)) + (await manual(sprintStart, today));
+  const activeDays =
+    Number((await q("SELECT COUNT(DISTINCT applied_date) as c FROM job_applications WHERE applied_date >= ?").get<{ c: number }>(sprintStart))?.c ?? 0) || 1;
 
   return {
-    today: count(today, today) + manual(today, today),
-    yesterday: count(addDays(today, -1), addDays(today, -1)) + manual(addDays(today, -1), addDays(today, -1)),
-    week: count(weekAgo, today) + manual(weekAgo, today),
-    month: count(monthAgo, today) + manual(monthAgo, today),
+    today: (await count(today, today)) + (await manual(today, today)),
+    yesterday: (await count(addDays(today, -1), addDays(today, -1))) + (await manual(addDays(today, -1), addDays(today, -1))),
+    week: (await count(weekAgo, today)) + (await manual(weekAgo, today)),
+    month: (await count(monthAgo, today)) + (await manual(monthAgo, today)),
     sprint: sprintTotal,
     avgPerActiveDay: Math.round((sprintTotal / activeDays) * 10) / 10,
-    pending: (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE review_state='pending'").get() as { c: number }).c,
+    pending: Number((await q("SELECT COUNT(*) as c FROM job_applications WHERE review_state='pending'").get<{ c: number }>())?.c ?? 0),
   };
 }

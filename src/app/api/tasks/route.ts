@@ -10,9 +10,9 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
 
   if (body.raw) {
-    const parsed = parseMessyInput(body.raw);
-    const ids = parsed.map((t) =>
-      createTaskFromAssistant({
+    const parsed = await parseMessyInput(body.raw);
+    for (const t of parsed) {
+      await createTaskFromAssistant({
         title: t.title,
         domain: t.domain,
         entity_type: t.entity_type,
@@ -22,12 +22,12 @@ export async function POST(req: NextRequest) {
         effort_min: t.effort_min,
         recurring: t.recurring,
         status: "inbox",
-      })
-    );
-    return NextResponse.json({ ok: true, created: ids.length, tasks: parsed });
+      });
+    }
+    return NextResponse.json({ ok: true, created: parsed.length, tasks: parsed });
   }
 
   if (!body.title) return NextResponse.json({ error: "title or raw required" }, { status: 400 });
-  const id = createTaskFromAssistant(body);
+  const id = await createTaskFromAssistant(body);
   return NextResponse.json({ ok: true, id });
 }

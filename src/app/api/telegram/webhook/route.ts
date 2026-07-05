@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
 import { handleCommand, sendTelegramMessage } from "@/lib/telegram";
 
 /**
@@ -17,13 +17,12 @@ export async function POST(req: NextRequest) {
   const text: string | undefined = update?.message?.text;
   if (!text) return NextResponse.json({ ok: true });
 
-  const db = getDb();
-  db.prepare("INSERT INTO telegram_messages (direction, text, command, status) VALUES ('in', ?, ?, 'processed')").run(
+  await q("INSERT INTO telegram_messages (direction, text, command, status) VALUES ('in', ?, ?, 'processed')").run(
     text,
     text.split(/\s+/)[0].toLowerCase()
   );
 
-  const result = handleCommand(text);
+  const result = await handleCommand(text);
   await sendTelegramMessage(result.reply, "reply");
   return NextResponse.json({ ok: true });
 }

@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { q } from "./db";
 import type { Domain } from "./types";
 import { safeJson } from "./scoring";
 
@@ -21,29 +21,27 @@ interface AliasEntry {
 }
 
 /** Build the alias map from the knowledge base (client/project names + aliases + alias table). */
-export function getAliasMap(): AliasEntry[] {
-  const db = getDb();
+export async function getAliasMap(): Promise<AliasEntry[]> {
   const out: AliasEntry[] = [];
-  const clients = db.prepare("SELECT id, name, aliases FROM clients").all() as { id: number; name: string; aliases: string }[];
+  const clients = await q("SELECT id, name, aliases FROM clients").all<{ id: number; name: string; aliases: string }>();
   for (const c of clients) {
     out.push({ alias: c.name.toLowerCase(), entity_type: "client", entity_id: c.id, entity_name: c.name });
     for (const a of safeJson<string[]>(c.aliases, [])) {
       out.push({ alias: a.toLowerCase(), entity_type: "client", entity_id: c.id, entity_name: c.name });
     }
   }
-  const projects = db.prepare("SELECT id, name, aliases FROM projects").all() as { id: number; name: string; aliases: string }[];
+  const projects = await q("SELECT id, name, aliases FROM projects").all<{ id: number; name: string; aliases: string }>();
   for (const p of projects) {
     out.push({ alias: p.name.toLowerCase(), entity_type: "project", entity_id: p.id, entity_name: p.name });
     for (const a of safeJson<string[]>(p.aliases, [])) {
       out.push({ alias: a.toLowerCase(), entity_type: "project", entity_id: p.id, entity_name: p.name });
     }
   }
-  const extra = db.prepare("SELECT alias, entity_type, entity_id FROM entity_aliases").all() as { alias: string; entity_type: "client" | "project"; entity_id: number }[];
+  const extra = await q("SELECT alias, entity_type, entity_id FROM entity_aliases").all<{ alias: string; entity_type: "client" | "project"; entity_id: number }>();
+  const clientNames = new Map(clients.map((c) => [c.id, c.name]));
+  const projectNames = new Map(projects.map((p) => [p.id, p.name]));
   for (const e of extra) {
-    const name =
-      e.entity_type === "client"
-        ? (db.prepare("SELECT name FROM clients WHERE id=?").get(e.entity_id) as { name: string } | undefined)?.name
-        : (db.prepare("SELECT name FROM projects WHERE id=?").get(e.entity_id) as { name: string } | undefined)?.name;
+    const name = e.entity_type === "client" ? clientNames.get(e.entity_id) : projectNames.get(e.entity_id);
     if (name) out.push({ alias: e.alias.toLowerCase(), entity_type: e.entity_type, entity_id: e.entity_id, entity_name: name });
   }
   // Longest aliases first so "si lounge" wins over "si"
@@ -113,8 +111,8 @@ export function splitMessy(input: string): string[] {
 }
 
 /** Deterministic parse of messy input into categorized tasks using the knowledge base. */
-export function parseMessyInput(input: string): ParsedTask[] {
-  const aliases = getAliasMap();
+export async function parseMessyInput(input: string): Promise<ParsedTask[]> {
+  const aliases = await getAliasMap();
   return splitMessy(input).map((fragment) => {
     const entity = matchEntity(fragment, aliases);
     const domain = detectDomain(fragment, entity);

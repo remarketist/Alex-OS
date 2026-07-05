@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { q } from "./db";
 import { parseMessyInput, type ParsedTask } from "./parser";
 import { addDays, dayName } from "./dates";
 import { safeJson } from "./scoring";
@@ -48,22 +48,27 @@ export function defaultTargets(): WeeklyTargets {
 }
 
 /** Knowledge-base-driven suggestions for what this week should include. */
-export function kbSuggestions(): string[] {
-  const db = getDb();
+export async function kbSuggestions(): Promise<string[]> {
   const out: string[] = [];
-  const clients = db.prepare("SELECT name, weekly_target_hours, recurring_deliverables FROM clients WHERE active=1 ORDER BY priority").all() as
-    { name: string; weekly_target_hours: number; recurring_deliverables: string }[];
+  const clients = await q("SELECT name, weekly_target_hours, recurring_deliverables FROM clients WHERE active=1 ORDER BY priority").all<{
+    name: string;
+    weekly_target_hours: number;
+    recurring_deliverables: string;
+  }>();
   for (const c of clients) {
     const dels = safeJson<string[]>(c.recurring_deliverables, []).slice(0, 2).join(", ");
     out.push(`${c.name}: ${c.weekly_target_hours}h target — ${dels || "recurring work"}`);
   }
-  const projects = db.prepare("SELECT name, weekly_block_target, next_actions FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END").all() as
-    { name: string; weekly_block_target: number; next_actions: string }[];
+  const projects = await q(
+    "SELECT name, weekly_block_target, next_actions FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END"
+  ).all<{ name: string; weekly_block_target: number; next_actions: string }>();
   for (const p of projects.slice(0, 3)) {
     out.push(`${p.name}: ${p.weekly_block_target} blocks — ${p.next_actions || "next milestone"}`);
   }
-  const fitness = db.prepare("SELECT preferred_habits, smoking_daily_target FROM fitness_profiles WHERE id=1").get() as
-    { preferred_habits: string; smoking_daily_target: number } | undefined;
+  const fitness = await q("SELECT preferred_habits, smoking_daily_target FROM fitness_profiles WHERE id=1").get<{
+    preferred_habits: string;
+    smoking_daily_target: number;
+  }>();
   if (fitness) {
     out.push(`Body: ${fitness.preferred_habits}`);
     out.push(`Smoking: hold the line at ≤${fitness.smoking_daily_target}/day`);
@@ -72,12 +77,11 @@ export function kbSuggestions(): string[] {
 }
 
 /** Generate the full proposed weekly plan from messy input + knowledge base. */
-export function generateWeeklyPlan(messyInput: string, weekStartDate: string): ProposedPlan {
-  const db = getDb();
-  const parsed = parseMessyInput(messyInput);
+export async function generateWeeklyPlan(messyInput: string, weekStartDate: string): Promise<ProposedPlan> {
+  const parsed = await parseMessyInput(messyInput);
   const targets = defaultTargets();
 
-  const fitness = db.prepare("SELECT smoking_daily_target FROM fitness_profiles WHERE id=1").get() as { smoking_daily_target: number } | undefined;
+  const fitness = await q("SELECT smoking_daily_target FROM fitness_profiles WHERE id=1").get<{ smoking_daily_target: number }>();
   if (fitness) targets.smoking_limit = fitness.smoking_daily_target;
 
   // Sort: priority first, then effort descending (big rocks early in the week)
@@ -91,7 +95,6 @@ export function generateWeeklyPlan(messyInput: string, weekStartDate: string): P
   let di = 0;
   for (const t of workTasks) {
     if (t.recurring) continue; // recurring handled by blocks
-    // find the next weekday bucket with room
     let placed = false;
     for (let tries = 0; tries < 7 && !placed; tries++) {
       const idx = di % 5; // weekdays
@@ -104,8 +107,10 @@ export function generateWeeklyPlan(messyInput: string, weekStartDate: string): P
     if (!placed) buckets[5].push(t); // overflow to Saturday
   }
 
-  const clients = db.prepare("SELECT id, name FROM clients WHERE active=1 ORDER BY priority").all() as { id: number; name: string }[];
-  const topProjects = db.prepare("SELECT id, name FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END LIMIT 3").all() as { id: number; name: string }[];
+  const clients = await q("SELECT id, name FROM clients WHERE active=1 ORDER BY priority").all<{ id: number; name: string }>();
+  const topProjects = await q(
+    "SELECT id, name FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END LIMIT 3"
+  ).all<{ id: number; name: string }>();
 
   for (let i = 0; i < 7; i++) {
     const date = addDays(weekStartDate, i);
@@ -190,43 +195,39 @@ export function generateWeeklyPlan(messyInput: string, weekStartDate: string): P
     days.push({ date, mission, blocks, tasks: dayTasks });
   }
 
-  return { week_start: weekStartDate, targets, days, kb_suggestions: kbSuggestions() };
+  return { week_start: weekStartDate, targets, days, kb_suggestions: await kbSuggestions() };
 }
 
 /** Persist an approved plan: weekly_plan + daily_plans + work_blocks + scheduled tasks. */
-export function activatePlan(plan: ProposedPlan, messyInput: string, sprintId: number | null): number {
-  const db = getDb();
-  const tx = db.transaction(() => {
-    // Deactivate previous plan for this week
-    db.prepare("UPDATE weekly_plans SET status='completed' WHERE week_start=? AND status='active'").run(plan.week_start);
-    const wp = db
-      .prepare("INSERT INTO weekly_plans (sprint_id, week_start, targets, status, messy_input) VALUES (?,?,?,'active',?)")
-      .run(sprintId, plan.week_start, JSON.stringify(plan.targets), messyInput);
-    const wpId = Number(wp.lastInsertRowid);
+export async function activatePlan(plan: ProposedPlan, messyInput: string, sprintId: number | null): Promise<number> {
+  await q("UPDATE weekly_plans SET status='completed' WHERE week_start=? AND status='active'").run(plan.week_start);
+  const wp = await q(
+    "INSERT INTO weekly_plans (sprint_id, week_start, targets, status, messy_input) VALUES (?,?,?,'active',?)"
+  ).run(sprintId, plan.week_start, JSON.stringify(plan.targets), messyInput);
+  const wpId = wp.lastInsertRowid;
 
-    const insDay = db.prepare("INSERT INTO daily_plans (weekly_plan_id, date, mission, status) VALUES (?,?,?,'planned') ON CONFLICT(date) DO UPDATE SET weekly_plan_id=excluded.weekly_plan_id, mission=excluded.mission");
-    const insBlock = db.prepare(
-      `INSERT INTO work_blocks (daily_plan_id, date, name, domain, entity_type, entity_id, start_time, end_time, goal, completion_criteria, reminder_copy, status, sort)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,'upcoming',?)`
-    );
-    const insTask = db.prepare(
-      `INSERT INTO tasks (title, domain, entity_type, entity_id, entity_name, priority, effort_min, status, scheduled_date, recurring)
-       VALUES (?,?,?,?,?,?,?,'scheduled',?,?)`
-    );
-
-    for (const day of plan.days) {
-      insDay.run(wpId, day.date, day.mission);
-      const dpId = (db.prepare("SELECT id FROM daily_plans WHERE date=?").get(day.date) as { id: number }).id;
-      // Replace existing future blocks for this date (keep past days' history)
-      db.prepare("DELETE FROM work_blocks WHERE date=? AND status='upcoming'").run(day.date);
-      day.blocks.forEach((b, idx) => {
-        insBlock.run(dpId, day.date, b.name, b.domain, b.entity_type, b.entity_id, b.start_time, b.end_time, b.goal, b.completion_criteria, b.reminder_copy, idx);
-      });
-      for (const t of day.tasks) {
-        insTask.run(t.title, t.domain, t.entity_type, t.entity_id, t.entity_name, t.priority, t.effort_min, day.date, t.recurring ? 1 : 0);
-      }
+  for (const day of plan.days) {
+    await q(
+      `INSERT INTO daily_plans (weekly_plan_id, date, mission, status) VALUES (?,?,?,'planned')
+       ON CONFLICT(date) DO UPDATE SET weekly_plan_id=excluded.weekly_plan_id, mission=excluded.mission`
+    ).run(wpId, day.date, day.mission);
+    const dp = await q("SELECT id FROM daily_plans WHERE date=?").get<{ id: number }>(day.date);
+    if (!dp) continue;
+    // Replace existing future blocks for this date (keep past days' history)
+    await q("DELETE FROM work_blocks WHERE date=? AND status='upcoming'").run(day.date);
+    for (let idx = 0; idx < day.blocks.length; idx++) {
+      const b = day.blocks[idx];
+      await q(
+        `INSERT INTO work_blocks (daily_plan_id, date, name, domain, entity_type, entity_id, start_time, end_time, goal, completion_criteria, reminder_copy, status, sort)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,'upcoming',?)`
+      ).run(dp.id, day.date, b.name, b.domain, b.entity_type, b.entity_id, b.start_time, b.end_time, b.goal, b.completion_criteria, b.reminder_copy, idx);
     }
-    return wpId;
-  });
-  return tx();
+    for (const t of day.tasks) {
+      await q(
+        `INSERT INTO tasks (title, domain, entity_type, entity_id, entity_name, priority, effort_min, status, scheduled_date, recurring)
+         VALUES (?,?,?,?,?,?,?,'scheduled',?,?)`
+      ).run(t.title, t.domain, t.entity_type, t.entity_id, t.entity_name, t.priority, t.effort_min, day.date, t.recurring ? 1 : 0);
+    }
+  }
+  return wpId;
 }

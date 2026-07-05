@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
 import { todayStr, daysBetween } from "@/lib/dates";
 import { jobMetrics } from "@/lib/gmail";
 import { SprintClient } from "./SprintClient";
@@ -6,11 +6,10 @@ import type { Sprint } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-export default function SprintPage() {
-  const db = getDb();
+export default async function SprintPage() {
   const today = todayStr();
-  const sprint = db.prepare("SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get() as Sprint | undefined;
-  const metrics = jobMetrics();
+  const sprint = await q("SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<Sprint>();
+  const metrics = await jobMetrics();
 
   // Sprint-wide aggregates
   let aggregates = { blocks: 0, workouts: 0, walks: 0, clientHours: 0, projectHours: 0, journals: 0, reviews: 0 };
@@ -21,15 +20,15 @@ export default function SprintPage() {
     total = daysBetween(sprint.start_date, sprint.end_date) + 1;
     const from = sprint.start_date;
     const to = sprint.end_date;
-    const cnt = (sql: string) => (db.prepare(sql).get(from, to) as { c: number }).c;
+    const cnt = async (sql: string) => Number((await q(sql).get<{ c: number }>(from, to))?.c ?? 0);
     aggregates = {
-      blocks: cnt("SELECT COUNT(*) as c FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')"),
-      workouts: cnt("SELECT COUNT(*) as c FROM check_ins WHERE type='workout' AND date BETWEEN ? AND ?"),
-      walks: cnt("SELECT COUNT(*) as c FROM check_ins WHERE type='walk' AND date BETWEEN ? AND ?"),
-      clientHours: Math.round(((db.prepare("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='client_minutes' AND date BETWEEN ? AND ?").get(from, to) as { c: number }).c / 60) * 10) / 10,
-      projectHours: Math.round(((db.prepare("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='project_minutes' AND date BETWEEN ? AND ?").get(from, to) as { c: number }).c / 60) * 10) / 10,
-      journals: cnt("SELECT COUNT(*) as c FROM journal_entries WHERE date BETWEEN ? AND ?"),
-      reviews: cnt("SELECT COUNT(*) as c FROM weekly_reviews WHERE week_start BETWEEN ? AND ?"),
+      blocks: await cnt("SELECT COUNT(*) as c FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')"),
+      workouts: await cnt("SELECT COUNT(*) as c FROM check_ins WHERE type='workout' AND date BETWEEN ? AND ?"),
+      walks: await cnt("SELECT COUNT(*) as c FROM check_ins WHERE type='walk' AND date BETWEEN ? AND ?"),
+      clientHours: Math.round((await cnt("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='client_minutes' AND date BETWEEN ? AND ?")) / 60 * 10) / 10,
+      projectHours: Math.round((await cnt("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='project_minutes' AND date BETWEEN ? AND ?")) / 60 * 10) / 10,
+      journals: await cnt("SELECT COUNT(*) as c FROM journal_entries WHERE date BETWEEN ? AND ?"),
+      reviews: await cnt("SELECT COUNT(*) as c FROM weekly_reviews WHERE week_start BETWEEN ? AND ?"),
     };
   }
 

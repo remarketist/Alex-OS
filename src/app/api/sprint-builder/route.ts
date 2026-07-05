@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateWeeklyPlan, activatePlan, type ProposedPlan } from "@/lib/sprint-builder";
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
 import { weekStart, todayStr } from "@/lib/dates";
 
 /**
@@ -12,14 +12,13 @@ export async function POST(req: NextRequest) {
 
   if (body.action === "generate") {
     const ws = body.weekStart || weekStart(todayStr());
-    const plan = generateWeeklyPlan(body.messy || "", ws);
+    const plan = await generateWeeklyPlan(body.messy || "", ws);
     return NextResponse.json({ plan });
   }
 
   if (body.action === "activate") {
-    const db = getDb();
-    const sprint = db.prepare("SELECT id FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get() as { id: number } | undefined;
-    const id = activatePlan(body.plan as ProposedPlan, body.messy || "", sprint?.id ?? null);
+    const sprint = await q("SELECT id FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<{ id: number }>();
+    const id = await activatePlan(body.plan as ProposedPlan, body.messy || "", sprint?.id ?? null);
     return NextResponse.json({ ok: true, weeklyPlanId: id });
   }
 

@@ -1,5 +1,5 @@
-import { getDb } from "./db";
-import { getDayStats } from "./scoring";
+import { q } from "./db";
+import { getDayStats, type DayStats } from "./scoring";
 import { addDays } from "./dates";
 
 export interface Adaptation {
@@ -9,10 +9,9 @@ export interface Adaptation {
 }
 
 /** End-of-day adaptation engine: reads today's reality, recommends tomorrow's plan changes. */
-export function computeAdaptation(date: string): Adaptation {
-  const db = getDb();
-  const s = getDayStats(date);
-  const yesterday = getDayStats(addDays(date, -1));
+export async function computeAdaptation(date: string): Promise<Adaptation> {
+  const s = await getDayStats(date);
+  const yesterday = await getDayStats(addDays(date, -1));
   const adjustments: string[] = [];
 
   if (s.jobs < 2) {
@@ -32,10 +31,8 @@ export function computeAdaptation(date: string): Adaptation {
   if (s.projectMinutes < 45) {
     adjustments.push("Project work missed — a 45-minute minimum project block is scheduled tomorrow.");
   }
-  const derailed = db
-    .prepare("SELECT COUNT(*) as c FROM derail_events WHERE ts LIKE ?")
-    .get(date + "%") as { c: number };
-  if (derailed.c > 0) {
+  const derailed = await q("SELECT COUNT(*) as c FROM derail_events WHERE ts LIKE ?").get<{ c: number }>(date + "%");
+  if ((derailed?.c ?? 0) > 0) {
     adjustments.push("You derailed today — tomorrow includes a 20-minute reset block after lunch, before the drift window.");
   }
   if (adjustments.length === 0) {
@@ -49,7 +46,7 @@ export function computeAdaptation(date: string): Adaptation {
   };
 }
 
-function hardTruth(s: ReturnType<typeof getDayStats>): string {
+function hardTruth(s: DayStats): string {
   if (s.jobs === 0) return "Zero applications. Everything else today was decoration.";
   if (s.clientMinutes === 0 && s.projectMinutes === 0)
     return "No client work, no project work. Busy is not the same as building.";
@@ -62,7 +59,7 @@ function hardTruth(s: ReturnType<typeof getDayStats>): string {
   return "Solid day. The only risk now is thinking one good day is momentum.";
 }
 
-function minimumViableWin(s: ReturnType<typeof getDayStats>): string {
+function minimumViableWin(s: DayStats): string {
   const parts: string[] = [];
   parts.push(s.jobs < 2 ? "3 applications before 10:00" : "3 applications");
   parts.push(s.clientMinutes < 60 ? "90 minutes client work, protected" : "90 minutes client work");

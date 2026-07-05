@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { q } from "./db";
 import type { DayLevel, ScoreBreakdown } from "./types";
 
 export interface DayStats {
@@ -19,51 +19,52 @@ export interface DayStats {
   blocksTotal: number;
 }
 
-export function getDayStats(date: string): DayStats {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT type, SUM(value) as total, COUNT(*) as n FROM check_ins WHERE date = ? GROUP BY type")
-    .all(date) as { type: string; total: number; n: number }[];
+export async function getDayStats(date: string): Promise<DayStats> {
+  const rows = await q(
+    "SELECT type, SUM(value) as total, COUNT(*) as n FROM check_ins WHERE date = ? GROUP BY type"
+  ).all<{ type: string; total: number; n: number }>(date);
   const map = new Map(rows.map((r) => [r.type, r]));
 
   // Gmail-detected applications also count toward jobs
-  const gmailApps = db
-    .prepare("SELECT COUNT(*) as c FROM job_applications WHERE applied_date = ? AND review_state != 'ignored' AND review_state != 'pending'")
-    .get(date) as { c: number };
+  const gmailApps = await q(
+    "SELECT COUNT(*) as c FROM job_applications WHERE applied_date = ? AND review_state != 'ignored' AND review_state != 'pending'"
+  ).get<{ c: number }>(date);
 
-  const journal = db
-    .prepare("SELECT COUNT(*) as c FROM journal_entries WHERE date = ?")
-    .get(date) as { c: number };
+  const journal = await q("SELECT COUNT(*) as c FROM journal_entries WHERE date = ?").get<{ c: number }>(date);
 
-  const blocks = db
-    .prepare("SELECT status, COUNT(*) as c FROM work_blocks WHERE date = ? GROUP BY status")
-    .all(date) as { status: string; c: number }[];
+  const blocks = await q(
+    "SELECT status, COUNT(*) as c FROM work_blocks WHERE date = ? GROUP BY status"
+  ).all<{ status: string; c: number }>(date);
   const blocksCompleted = blocks.filter((b) => b.status === "completed" || b.status === "shrunk").reduce((a, b) => a + b.c, 0);
   const blocksTotal = blocks.reduce((a, b) => a + b.c, 0);
 
-  const fitness = db.prepare("SELECT smoking_daily_target FROM fitness_profiles WHERE id=1").get() as { smoking_daily_target: number } | undefined;
+  const fitness = await q("SELECT smoking_daily_target FROM fitness_profiles WHERE id=1").get<{ smoking_daily_target: number }>();
 
   const smokeRow = map.get("smoke");
-  const lastMood = db.prepare("SELECT value FROM check_ins WHERE date=? AND type='mood' ORDER BY id DESC LIMIT 1").get(date) as { value: number } | undefined;
-  const lastEnergy = db.prepare("SELECT value FROM check_ins WHERE date=? AND type='energy' ORDER BY id DESC LIMIT 1").get(date) as { value: number } | undefined;
+  const lastMood = await q("SELECT value FROM check_ins WHERE date=? AND type='mood' ORDER BY id DESC LIMIT 1").get<{ value: number }>(date);
+  const lastEnergy = await q("SELECT value FROM check_ins WHERE date=? AND type='energy' ORDER BY id DESC LIMIT 1").get<{ value: number }>(date);
 
   return {
     date,
-    jobs: (map.get("jobs")?.total ?? 0) + gmailApps.c,
-    tailored: map.get("tailored")?.total ?? 0,
-    clientMinutes: map.get("client_minutes")?.total ?? 0,
-    projectMinutes: map.get("project_minutes")?.total ?? 0,
+    jobs: (smokeSafe(map.get("jobs")?.total) ?? 0) + (gmailApps?.c ?? 0),
+    tailored: smokeSafe(map.get("tailored")?.total) ?? 0,
+    clientMinutes: smokeSafe(map.get("client_minutes")?.total) ?? 0,
+    projectMinutes: smokeSafe(map.get("project_minutes")?.total) ?? 0,
     walk: (map.get("walk")?.n ?? 0) > 0,
     workout: (map.get("workout")?.n ?? 0) > 0 || (map.get("stretch")?.n ?? 0) > 0,
     meditation: (map.get("meditation")?.n ?? 0) > 0,
-    smokeCount: smokeRow ? smokeRow.total : null,
+    smokeCount: smokeRow ? Number(smokeRow.total) : null,
     smokeTarget: fitness?.smoking_daily_target ?? 10,
-    journalDone: journal.c > 0,
+    journalDone: (journal?.c ?? 0) > 0,
     mood: lastMood?.value ?? null,
     energy: lastEnergy?.value ?? null,
     blocksCompleted,
     blocksTotal,
   };
+}
+
+function smokeSafe(v: number | null | undefined): number | null {
+  return v === null || v === undefined ? null : Number(v);
 }
 
 export interface ScoreResult {
@@ -73,10 +74,9 @@ export interface ScoreResult {
   weights: ScoreBreakdown;
 }
 
-export function computeScore(date: string): ScoreResult {
-  const db = getDb();
-  const s = getDayStats(date);
-  const settings = db.prepare("SELECT score_weights FROM settings WHERE id=1").get() as { score_weights: string } | undefined;
+export async function computeScore(date: string): Promise<ScoreResult> {
+  const s = await getDayStats(date);
+  const settings = await q("SELECT score_weights FROM settings WHERE id=1").get<{ score_weights: string }>();
   const w: ScoreBreakdown = {
     jobs: 25, client: 20, project: 20, body: 15, smoking: 10, journal: 10,
     ...(settings ? safeJson(settings.score_weights, {}) : {}),
@@ -84,18 +84,13 @@ export function computeScore(date: string): ScoreResult {
 
   const clamp = (v: number, max: number) => Math.min(Math.max(v, 0), max);
 
-  // Jobs: silver target = 5 applications; tailored counts extra
   const jobs = clamp(((s.jobs + s.tailored * 0.5) / 5) * w.jobs, w.jobs);
-  // Client: silver = 120 minutes
   const client = clamp((s.clientMinutes / 120) * w.client, w.client);
-  // Project: silver = 90 minutes
   const project = clamp((s.projectMinutes / 90) * w.project, w.project);
-  // Body: walk ~half, workout ~third, meditation rest
   const body = clamp(
     (s.walk ? w.body * 0.45 : 0) + (s.workout ? w.body * 0.35 : 0) + (s.meditation ? w.body * 0.2 : 0),
     w.body
   );
-  // Smoking: logged = half, within target = other half
   const smoking =
     s.smokeCount === null
       ? 0
@@ -143,10 +138,12 @@ export function computeLevel(s: DayStats): DayLevel {
   return "below";
 }
 
-export function saveDailyScore(date: string, extras?: { hard_truth?: string; adjustment?: string; mvw?: string }) {
-  const db = getDb();
-  const r = computeScore(date);
-  db.prepare(
+export async function saveDailyScore(
+  date: string,
+  extras?: { hard_truth?: string; adjustment?: string; mvw?: string }
+): Promise<ScoreResult> {
+  const r = await computeScore(date);
+  await q(
     `INSERT INTO daily_scores (date, score, level, breakdown, hard_truth, adjustment, mvw)
      VALUES (?,?,?,?,?,?,?)
      ON CONFLICT(date) DO UPDATE SET score=excluded.score, level=excluded.level, breakdown=excluded.breakdown,

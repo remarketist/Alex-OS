@@ -5,5 +5,5 @@ import { parseMessyInput } from "@/lib/parser";
 export async function POST(req: NextRequest) {
   const { raw } = await req.json();
   if (!raw) return NextResponse.json({ error: "raw required" }, { status: 400 });
-  return NextResponse.json({ tasks: parseMessyInput(raw) });
+  return NextResponse.json({ tasks: await parseMessyInput(raw) });
 }

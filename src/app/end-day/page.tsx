@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db";
+import { q } from "@/lib/db";
 import { todayStr } from "@/lib/dates";
 import { getDayStats } from "@/lib/scoring";
 import { EndDayClient } from "./EndDayClient";
@@ -6,11 +6,10 @@ import type { JournalEntry } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-export default function EndDayPage() {
-  const db = getDb();
+export default async function EndDayPage() {
   const today = todayStr();
-  const stats = getDayStats(today);
-  const entry = db.prepare("SELECT * FROM journal_entries WHERE date=?").get(today) as JournalEntry | undefined;
+  const stats = await getDayStats(today);
+  const entry = await q("SELECT * FROM journal_entries WHERE date=?").get<JournalEntry>(today);
 
   return (
     <EndDayClient
