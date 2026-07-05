@@ -1,4 +1,4 @@
-import { q } from "./db";
+import { q, batchAll } from "./db";
 import { todayStr, addDays } from "./dates";
 import { sendTelegramMessage } from "./telegram";
 
@@ -251,15 +251,23 @@ interface GmailApiMessage {
   payload?: { headers?: { name: string; value: string }[] };
 }
 
+/**
+ * Defensive limit: each message fetch is one outbound subrequest, and Cloudflare
+ * Workers allow max 50 per invocation. 20 messages per sync keeps the whole run
+ * (list + fetches + DB writes + alerts) safely under budget; the next sync picks
+ * up where this one left off since processed messages dedup out.
+ */
+const GMAIL_MAX_MESSAGES_PER_SYNC = 20;
+
 async function fetchGmailMessages(accessToken: string, query: string): Promise<DetectedEmail[]> {
   const listRes = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=100`,
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${GMAIL_MAX_MESSAGES_PER_SYNC}`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
   if (!listRes.ok) throw new Error(`Gmail list failed: ${listRes.status}`);
   const list = (await listRes.json()) as { messages?: { id: string; threadId: string }[] };
   const out: DetectedEmail[] = [];
-  for (const m of list.messages || []) {
+  for (const m of (list.messages || []).slice(0, GMAIL_MAX_MESSAGES_PER_SYNC)) {
     const msgRes = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -335,27 +343,36 @@ async function runDemoSync(): Promise<{ scanned: number; detected: number }> {
 
 export async function jobMetrics() {
   const today = todayStr();
-  const count = async (from: string, to: string) =>
-    Number((await q("SELECT COUNT(*) as c FROM job_applications WHERE applied_date >= ? AND applied_date <= ? AND review_state NOT IN ('ignored','pending')").get<{ c: number }>(from, to))?.c ?? 0);
-  const manual = async (from: string, to: string) =>
-    Number((await q("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='jobs' AND date >= ? AND date <= ?").get<{ c: number }>(from, to))?.c ?? 0);
-
-  const sprint = await q("SELECT start_date, end_date FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<{ start_date: string; end_date: string }>();
   const weekAgo = addDays(today, -6);
   const monthAgo = addDays(today, -29);
-  const sprintStart = sprint?.start_date || monthAgo;
 
-  const sprintTotal = (await count(sprintStart, today)) + (await manual(sprintStart, today));
-  const activeDays =
-    Number((await q("SELECT COUNT(DISTINCT applied_date) as c FROM job_applications WHERE applied_date >= ?").get<{ c: number }>(sprintStart))?.c ?? 0) || 1;
+  const sprint = await q("SELECT start_date, end_date FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<{ start_date: string; end_date: string }>();
+  const sprintStart = sprint?.start_date || monthAgo;
+  const windowStart = sprintStart < monthAgo ? sprintStart : monthAgo;
+
+  // One round-trip: per-day counts, then aggregate every window in memory
+  const [appsR, manualR, pendingR] = await batchAll([
+    { sql: "SELECT applied_date as d, COUNT(*) as c FROM job_applications WHERE applied_date >= ? AND review_state NOT IN ('ignored','pending') GROUP BY applied_date", args: [windowStart] },
+    { sql: "SELECT date as d, COALESCE(SUM(value),0) as c FROM check_ins WHERE type='jobs' AND date >= ? GROUP BY date", args: [windowStart] },
+    { sql: "SELECT COUNT(*) as c FROM job_applications WHERE review_state='pending'" },
+  ]);
+  const apps = appsR as unknown as { d: string; c: number }[];
+  const manual = manualR as unknown as { d: string; c: number }[];
+
+  const totalIn = (from: string, to: string) =>
+    apps.filter((r) => r.d >= from && r.d <= to).reduce((a, r) => a + Number(r.c), 0) +
+    manual.filter((r) => r.d >= from && r.d <= to).reduce((a, r) => a + Number(r.c), 0);
+
+  const sprintTotal = totalIn(sprintStart, today);
+  const activeDays = apps.filter((r) => r.d >= sprintStart).length || 1;
 
   return {
-    today: (await count(today, today)) + (await manual(today, today)),
-    yesterday: (await count(addDays(today, -1), addDays(today, -1))) + (await manual(addDays(today, -1), addDays(today, -1))),
-    week: (await count(weekAgo, today)) + (await manual(weekAgo, today)),
-    month: (await count(monthAgo, today)) + (await manual(monthAgo, today)),
+    today: totalIn(today, today),
+    yesterday: totalIn(addDays(today, -1), addDays(today, -1)),
+    week: totalIn(weekAgo, today),
+    month: totalIn(monthAgo, today),
     sprint: sprintTotal,
     avgPerActiveDay: Math.round((sprintTotal / activeDays) * 10) / 10,
-    pending: Number((await q("SELECT COUNT(*) as c FROM job_applications WHERE review_state='pending'").get<{ c: number }>())?.c ?? 0),
+    pending: Number((pendingR[0] as { c: number } | undefined)?.c ?? 0),
   };
 }

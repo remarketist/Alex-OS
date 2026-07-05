@@ -1,4 +1,4 @@
-import { q } from "./db";
+import { q, batchAll } from "./db";
 import type { DayLevel, ScoreBreakdown } from "./types";
 
 export interface DayStats {
@@ -20,29 +20,28 @@ export interface DayStats {
 }
 
 export async function getDayStats(date: string): Promise<DayStats> {
-  const rows = await q(
-    "SELECT type, SUM(value) as total, COUNT(*) as n FROM check_ins WHERE date = ? GROUP BY type"
-  ).all<{ type: string; total: number; n: number }>(date);
+  // One HTTP round-trip for all 7 reads (subrequest budget on Cloudflare Workers)
+  const [rowsR, gmailR, journalR, blocksR, fitnessR, moodR, energyR] = await batchAll([
+    { sql: "SELECT type, SUM(value) as total, COUNT(*) as n FROM check_ins WHERE date = ? GROUP BY type", args: [date] },
+    { sql: "SELECT COUNT(*) as c FROM job_applications WHERE applied_date = ? AND review_state != 'ignored' AND review_state != 'pending'", args: [date] },
+    { sql: "SELECT COUNT(*) as c FROM journal_entries WHERE date = ?", args: [date] },
+    { sql: "SELECT status, COUNT(*) as c FROM work_blocks WHERE date = ? GROUP BY status", args: [date] },
+    { sql: "SELECT smoking_daily_target FROM fitness_profiles WHERE id=1" },
+    { sql: "SELECT value FROM check_ins WHERE date=? AND type='mood' ORDER BY id DESC LIMIT 1", args: [date] },
+    { sql: "SELECT value FROM check_ins WHERE date=? AND type='energy' ORDER BY id DESC LIMIT 1", args: [date] },
+  ]);
+  const rows = rowsR as unknown as { type: string; total: number; n: number }[];
   const map = new Map(rows.map((r) => [r.type, r]));
-
-  // Gmail-detected applications also count toward jobs
-  const gmailApps = await q(
-    "SELECT COUNT(*) as c FROM job_applications WHERE applied_date = ? AND review_state != 'ignored' AND review_state != 'pending'"
-  ).get<{ c: number }>(date);
-
-  const journal = await q("SELECT COUNT(*) as c FROM journal_entries WHERE date = ?").get<{ c: number }>(date);
-
-  const blocks = await q(
-    "SELECT status, COUNT(*) as c FROM work_blocks WHERE date = ? GROUP BY status"
-  ).all<{ status: string; c: number }>(date);
-  const blocksCompleted = blocks.filter((b) => b.status === "completed" || b.status === "shrunk").reduce((a, b) => a + b.c, 0);
-  const blocksTotal = blocks.reduce((a, b) => a + b.c, 0);
-
-  const fitness = await q("SELECT smoking_daily_target FROM fitness_profiles WHERE id=1").get<{ smoking_daily_target: number }>();
+  const gmailApps = gmailR[0] as { c: number } | undefined;
+  const journal = journalR[0] as { c: number } | undefined;
+  const blocks = blocksR as unknown as { status: string; c: number }[];
+  const blocksCompleted = blocks.filter((b) => b.status === "completed" || b.status === "shrunk").reduce((a, b) => a + Number(b.c), 0);
+  const blocksTotal = blocks.reduce((a, b) => a + Number(b.c), 0);
+  const fitness = fitnessR[0] as { smoking_daily_target: number } | undefined;
 
   const smokeRow = map.get("smoke");
-  const lastMood = await q("SELECT value FROM check_ins WHERE date=? AND type='mood' ORDER BY id DESC LIMIT 1").get<{ value: number }>(date);
-  const lastEnergy = await q("SELECT value FROM check_ins WHERE date=? AND type='energy' ORDER BY id DESC LIMIT 1").get<{ value: number }>(date);
+  const lastMood = moodR[0] as { value: number } | undefined;
+  const lastEnergy = energyR[0] as { value: number } | undefined;
 
   return {
     date,
@@ -74,8 +73,8 @@ export interface ScoreResult {
   weights: ScoreBreakdown;
 }
 
-export async function computeScore(date: string): Promise<ScoreResult> {
-  const s = await getDayStats(date);
+export async function computeScore(date: string, preStats?: DayStats): Promise<ScoreResult> {
+  const s = preStats ?? (await getDayStats(date));
   const settings = await q("SELECT score_weights FROM settings WHERE id=1").get<{ score_weights: string }>();
   const w: ScoreBreakdown = {
     jobs: 25, client: 20, project: 20, body: 15, smoking: 10, journal: 10,

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getTodayContext, getStreaks, jobMetrics } from "@/lib/services";
-import { q } from "@/lib/db";
+import { batchAll } from "@/lib/db";
 import { todayStr, formatDateLong, daysBetween, nowTimeStr, timeToMin } from "@/lib/dates";
 import { Card, ScoreRing, LevelBadge, ProgressBar, DOMAIN_COLORS, Sparkline } from "@/components/ui";
 import { QuickActions } from "@/components/QuickActions";
@@ -10,29 +10,37 @@ import type { Sprint, Task } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 export default async function CommandCenter() {
+  console.log("[route] GET / — command center load");
   const today = todayStr();
   const ctx = await getTodayContext(today);
   const streaks = await getStreaks();
   const jobs = await jobMetrics();
-  const sprint = await q("SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1").get<Sprint>();
+
+  // One round-trip for everything else the dashboard needs
+  const [sprintR, remindersR, historyR, clientsR, projectsR] = await batchAll([
+    { sql: "SELECT * FROM sprints WHERE status='active' ORDER BY id DESC LIMIT 1" },
+    { sql: "SELECT time, label FROM reminders WHERE enabled=1 ORDER BY time" },
+    { sql: "SELECT score FROM daily_scores WHERE date < ? ORDER BY date DESC LIMIT 10", args: [today] },
+    { sql: "SELECT id, name FROM clients WHERE active=1 ORDER BY priority" },
+    { sql: "SELECT id, name FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END" },
+  ]);
+  const sprint = sprintR[0] as unknown as Sprint | undefined;
+  const reminders = remindersR as unknown as { time: string; label: string }[];
+  const history = historyR as unknown as { score: number }[];
+  const clients = clientsR as unknown as { id: number; name: string }[];
+  const projects = projectsR as unknown as { id: number; name: string }[];
+
   const sprintDay = sprint ? Math.max(daysBetween(sprint.start_date, today) + 1, 1) : 0;
   const sprintLen = sprint ? daysBetween(sprint.start_date, sprint.end_date) + 1 : 60;
 
   const now = nowTimeStr();
   const nowMin = timeToMin(now);
 
-  // Next reminder
-  const reminders = await q("SELECT time, label FROM reminders WHERE enabled=1 ORDER BY time").all<{ time: string; label: string }>();
   const nextReminder = reminders.find((r) => timeToMin(r.time) > nowMin) || reminders[0];
-
-  // Score history for sparkline
-  const history = await q("SELECT score FROM daily_scores WHERE date < ? ORDER BY date DESC LIMIT 10").all<{ score: number }>(today);
   const scoreTrend = [...history.reverse().map((h) => h.score), ctx.score.score];
 
-  // Entity groups
-  const clients = await q("SELECT id, name FROM clients WHERE active=1 ORDER BY priority").all<{ id: number; name: string }>();
-  const projects = await q("SELECT id, name FROM projects WHERE status='active' ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END").all<{ id: number; name: string }>();
-  const todayTasks = await q("SELECT * FROM tasks WHERE scheduled_date=? AND status NOT IN ('killed','done') ORDER BY priority").all<Task>(today);
+  // Tasks scheduled today, excluding done (ctx.tasks already fetched — filter in memory)
+  const todayTasks = ctx.tasks.filter((t) => t.status !== "done") as Task[];
 
   const s = ctx.stats;
   const winning = ctx.score.level !== "below";

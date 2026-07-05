@@ -1,4 +1,4 @@
-import { q } from "./db";
+import { q, batchAll } from "./db";
 import { todayStr, weekStart, addDays, nowTimeStr } from "./dates";
 import { computeScore, getDayStats, saveDailyScore, safeJson } from "./scoring";
 import { computeAdaptation } from "./adaptation";
@@ -13,11 +13,16 @@ import type { WorkBlock, Task, DailyPlan, Sprint, WeeklyPlan, WeeklyTargets } fr
  */
 
 export async function getTodayContext(date = todayStr()) {
-  const plan = await q("SELECT * FROM daily_plans WHERE date=?").get<DailyPlan>(date);
-  const blocks = await q("SELECT * FROM work_blocks WHERE date=? ORDER BY sort, start_time").all<WorkBlock>(date);
-  const tasks = await q("SELECT * FROM tasks WHERE scheduled_date=? AND status NOT IN ('killed') ORDER BY priority").all<Task>(date);
+  const [planR, blocksR, tasksR] = await batchAll([
+    { sql: "SELECT * FROM daily_plans WHERE date=?", args: [date] },
+    { sql: "SELECT * FROM work_blocks WHERE date=? ORDER BY sort, start_time", args: [date] },
+    { sql: "SELECT * FROM tasks WHERE scheduled_date=? AND status NOT IN ('killed') ORDER BY priority", args: [date] },
+  ]);
+  const plan = planR[0] as unknown as DailyPlan | undefined;
+  const blocks = blocksR as unknown as WorkBlock[];
+  const tasks = tasksR as unknown as Task[];
   const stats = await getDayStats(date);
-  const score = await computeScore(date);
+  const score = await computeScore(date, stats);
   const now = nowTimeStr();
   const activeBlock = blocks.find((b) => b.status === "active") || null;
   const nextBlock = blocks.find((b) => (b.status === "upcoming" || b.status === "rescheduled") && b.end_time > now) || null;
@@ -32,27 +37,29 @@ export async function getWeeklySprintContext(date = todayStr()) {
 
   const from = ws;
   const to = addDays(ws, 6);
-  const sum = async (type: string) =>
-    Number((await q("SELECT COALESCE(SUM(value),0) as v FROM check_ins WHERE type=? AND date BETWEEN ? AND ?").get<{ v: number }>(type, from, to))?.v ?? 0);
-  const cnt = async (type: string) =>
-    Number((await q("SELECT COUNT(*) as v FROM check_ins WHERE type=? AND date BETWEEN ? AND ?").get<{ v: number }>(type, from, to))?.v ?? 0);
-  const gmailApps = Number(
-    (await q("SELECT COUNT(*) as v FROM job_applications WHERE applied_date BETWEEN ? AND ? AND review_state NOT IN ('ignored','pending')").get<{ v: number }>(from, to))?.v ?? 0
-  );
+  // One round-trip for all weekly aggregates
+  const [checkR, gmailR, journalR, blocksR] = await batchAll([
+    { sql: "SELECT type, SUM(value) as total, COUNT(*) as n FROM check_ins WHERE date BETWEEN ? AND ? GROUP BY type", args: [from, to] },
+    { sql: "SELECT COUNT(*) as v FROM job_applications WHERE applied_date BETWEEN ? AND ? AND review_state NOT IN ('ignored','pending')", args: [from, to] },
+    { sql: "SELECT COUNT(*) as v FROM journal_entries WHERE date BETWEEN ? AND ?", args: [from, to] },
+    { sql: "SELECT COUNT(*) as v FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')", args: [from, to] },
+  ]);
+  const byType = new Map((checkR as unknown as { type: string; total: number; n: number }[]).map((r) => [r.type, r]));
+  const sum = (type: string) => Number(byType.get(type)?.total ?? 0);
+  const cnt = (type: string) => Number(byType.get(type)?.n ?? 0);
+  const gmailApps = Number((gmailR[0] as { v: number } | undefined)?.v ?? 0);
 
   const actuals = {
-    job_applications: (await sum("jobs")) + gmailApps,
-    tailored_applications: await sum("tailored"),
-    follow_ups: await sum("followup"),
-    client_hours: Math.round(((await sum("client_minutes")) / 60) * 10) / 10,
-    project_hours: Math.round(((await sum("project_minutes")) / 60) * 10) / 10,
-    workouts: await cnt("workout"),
-    walks: await cnt("walk"),
-    meditations: await cnt("meditation"),
-    journal_entries: Number((await q("SELECT COUNT(*) as v FROM journal_entries WHERE date BETWEEN ? AND ?").get<{ v: number }>(from, to))?.v ?? 0),
-    blocks_completed: Number(
-      (await q("SELECT COUNT(*) as v FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')").get<{ v: number }>(from, to))?.v ?? 0
-    ),
+    job_applications: sum("jobs") + gmailApps,
+    tailored_applications: sum("tailored"),
+    follow_ups: sum("followup"),
+    client_hours: Math.round((sum("client_minutes") / 60) * 10) / 10,
+    project_hours: Math.round((sum("project_minutes") / 60) * 10) / 10,
+    workouts: cnt("workout"),
+    walks: cnt("walk"),
+    meditations: cnt("meditation"),
+    journal_entries: Number((journalR[0] as { v: number } | undefined)?.v ?? 0),
+    blocks_completed: Number((blocksR[0] as { v: number } | undefined)?.v ?? 0),
   };
 
   return { weekStart: ws, sprint: sprint ?? null, weeklyPlan: weeklyPlan ?? null, targets, actuals };
@@ -193,13 +200,16 @@ export async function generateWeeklyReview(weekStartDate = weekStart(todayStr())
 export async function getStreaks() {
   const today = todayStr();
 
-  // Pull the last 60 days of relevant activity in three queries, then compute in memory.
+  // Pull the last 60 days of relevant activity in ONE round-trip, then compute in memory.
   const from = addDays(today, -60);
-  const checkins = await q("SELECT DISTINCT date, type FROM check_ins WHERE date >= ?").all<{ date: string; type: string }>(from);
-  const journals = await q("SELECT date FROM journal_entries WHERE date >= ?").all<{ date: string }>(from);
-  const gmailDays = await q(
-    "SELECT DISTINCT applied_date as date FROM job_applications WHERE applied_date >= ? AND review_state NOT IN ('ignored','pending')"
-  ).all<{ date: string }>(from);
+  const [checkinsR, journalsR, gmailDaysR] = await batchAll([
+    { sql: "SELECT DISTINCT date, type FROM check_ins WHERE date >= ?", args: [from] },
+    { sql: "SELECT date FROM journal_entries WHERE date >= ?", args: [from] },
+    { sql: "SELECT DISTINCT applied_date as date FROM job_applications WHERE applied_date >= ? AND review_state NOT IN ('ignored','pending')", args: [from] },
+  ]);
+  const checkins = checkinsR as unknown as { date: string; type: string }[];
+  const journals = journalsR as unknown as { date: string }[];
+  const gmailDays = gmailDaysR as unknown as { date: string }[];
 
   const byType = new Map<string, Set<string>>();
   for (const c of checkins) {

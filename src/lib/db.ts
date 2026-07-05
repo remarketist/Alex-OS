@@ -299,6 +299,8 @@ CREATE TABLE IF NOT EXISTS job_application_events (
 let _client: Client | null = null;
 let _ready: Promise<void> | null = null;
 
+const DEBUG = !!process.env.DB_DEBUG;
+
 function client(): Client {
   if (_client) return _client;
   const url = process.env.TURSO_DATABASE_URL;
@@ -312,18 +314,53 @@ function client(): Client {
   return _client;
 }
 
-/** Raw executor used during init/seed (bypasses the ready gate). */
-async function rawRun(sql: string, args: InValue[] = []): Promise<{ lastInsertRowid: number }> {
-  const r = await client().execute({ sql, args });
-  return { lastInsertRowid: Number(r.lastInsertRowid ?? 0) };
+export interface BatchStmt {
+  sql: string;
+  args?: InValue[];
 }
+
+/**
+ * Raw batch executor used during init/seed (bypasses the ready gate).
+ * IMPORTANT for Cloudflare Workers: each execute() is one HTTPS subrequest to
+ * Turso, and the free plan caps a Worker invocation at 50 subrequests — so
+ * multi-statement work MUST go through batch(), which is a single round-trip.
+ */
+async function rawBatch(stmts: BatchStmt[]): Promise<{ lastInsertRowid: number }[]> {
+  if (DEBUG) console.log(`[db] batch of ${stmts.length} statements`);
+  const results = await client().batch(
+    stmts.map((s) => ({ sql: s.sql, args: s.args ?? [] })),
+    "write"
+  );
+  return results.map((r) => ({ lastInsertRowid: Number(r.lastInsertRowid ?? 0) }));
+}
+
+const ALL_TABLES = [
+  "settings", "sprints", "weekly_plans", "daily_plans", "work_blocks", "tasks",
+  "clients", "projects", "fitness_profiles", "assistant_rules", "entity_aliases",
+  "habits", "check_ins", "journal_entries", "daily_scores", "weekly_reviews",
+  "derail_events", "telegram_messages", "reminders", "gmail_connections",
+  "gmail_sync_runs", "job_applications", "job_application_events",
+];
 
 async function init(): Promise<void> {
   const c = client();
   const statements = SCHEMA.split(/;\s*\n/).map((s) => s.trim()).filter(Boolean);
-  for (const s of statements) await c.execute(s);
-  const r = await c.execute("SELECT COUNT(*) as c FROM sprints");
-  if (Number(r.rows[0].c) === 0) await seed(rawRun);
+  // One round-trip for the whole schema
+  await c.batch(statements.map((sql) => ({ sql, args: [] })), "write");
+  const r = await c.execute(
+    "SELECT (SELECT COUNT(*) FROM sprints) as sprints, (SELECT COUNT(*) FROM job_application_events) as marker"
+  );
+  const sprints = Number(r.rows[0].sprints);
+  const marker = Number(r.rows[0].marker); // written by the seed's final phase
+  if (sprints === 0) {
+    await seed(rawBatch);
+  } else if (marker === 0) {
+    // A previous seed died partway (e.g. hit the Workers subrequest cap before
+    // batching existed). Wipe and reseed so the app starts from a coherent state.
+    console.log("[db] partial seed detected — wiping and reseeding");
+    await c.batch(ALL_TABLES.map((t) => ({ sql: `DELETE FROM ${t}`, args: [] })), "write");
+    await seed(rawBatch);
+  }
 }
 
 function ready(): Promise<void> {
@@ -342,17 +379,42 @@ export function q(sql: string): Stmt {
   return {
     async run(...args: InValue[]) {
       await ready();
-      return rawRun(sql, args);
+      if (DEBUG) console.log("[db] run:", sql.slice(0, 80));
+      const r = await client().execute({ sql, args });
+      return { lastInsertRowid: Number(r.lastInsertRowid ?? 0) };
     },
     async get<T>(...args: InValue[]) {
       await ready();
+      if (DEBUG) console.log("[db] get:", sql.slice(0, 80));
       const r = await client().execute({ sql, args });
       return r.rows[0] as T | undefined;
     },
     async all<T>(...args: InValue[]) {
       await ready();
+      if (DEBUG) console.log("[db] all:", sql.slice(0, 80));
       const r = await client().execute({ sql, args });
       return r.rows as unknown as T[];
     },
   };
+}
+
+/**
+ * Read many result sets in ONE HTTP round-trip (one Cloudflare subrequest).
+ * Returns rows per statement, in order. Use this on every page/service that
+ * needs more than a couple of queries.
+ */
+export async function batchAll(stmts: BatchStmt[]): Promise<Record<string, unknown>[][]> {
+  await ready();
+  if (DEBUG) console.log(`[db] batchAll of ${stmts.length} statements`);
+  const results = await client().batch(
+    stmts.map((s) => ({ sql: s.sql, args: s.args ?? [] })),
+    "read"
+  );
+  return results.map((r) => r.rows as unknown as Record<string, unknown>[]);
+}
+
+/** Write many statements in one round-trip; returns lastInsertRowid per statement. */
+export async function batchWrite(stmts: BatchStmt[]): Promise<{ lastInsertRowid: number }[]> {
+  await ready();
+  return rawBatch(stmts);
 }

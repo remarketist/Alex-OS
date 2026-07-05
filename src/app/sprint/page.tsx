@@ -1,4 +1,4 @@
-import { q } from "@/lib/db";
+import { q, batchAll } from "@/lib/db";
 import { todayStr, daysBetween } from "@/lib/dates";
 import { jobMetrics } from "@/lib/gmail";
 import { SprintClient } from "./SprintClient";
@@ -20,15 +20,22 @@ export default async function SprintPage() {
     total = daysBetween(sprint.start_date, sprint.end_date) + 1;
     const from = sprint.start_date;
     const to = sprint.end_date;
-    const cnt = async (sql: string) => Number((await q(sql).get<{ c: number }>(from, to))?.c ?? 0);
+    // One round-trip for all sprint aggregates
+    const [blocksR, checkR, journalsR, reviewsR] = await batchAll([
+      { sql: "SELECT COUNT(*) as c FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')", args: [from, to] },
+      { sql: "SELECT type, SUM(value) as total, COUNT(*) as n FROM check_ins WHERE date BETWEEN ? AND ? GROUP BY type", args: [from, to] },
+      { sql: "SELECT COUNT(*) as c FROM journal_entries WHERE date BETWEEN ? AND ?", args: [from, to] },
+      { sql: "SELECT COUNT(*) as c FROM weekly_reviews WHERE week_start BETWEEN ? AND ?", args: [from, to] },
+    ]);
+    const byType = new Map((checkR as unknown as { type: string; total: number; n: number }[]).map((r) => [r.type, r]));
     aggregates = {
-      blocks: await cnt("SELECT COUNT(*) as c FROM work_blocks WHERE date BETWEEN ? AND ? AND status IN ('completed','shrunk')"),
-      workouts: await cnt("SELECT COUNT(*) as c FROM check_ins WHERE type='workout' AND date BETWEEN ? AND ?"),
-      walks: await cnt("SELECT COUNT(*) as c FROM check_ins WHERE type='walk' AND date BETWEEN ? AND ?"),
-      clientHours: Math.round((await cnt("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='client_minutes' AND date BETWEEN ? AND ?")) / 60 * 10) / 10,
-      projectHours: Math.round((await cnt("SELECT COALESCE(SUM(value),0) as c FROM check_ins WHERE type='project_minutes' AND date BETWEEN ? AND ?")) / 60 * 10) / 10,
-      journals: await cnt("SELECT COUNT(*) as c FROM journal_entries WHERE date BETWEEN ? AND ?"),
-      reviews: await cnt("SELECT COUNT(*) as c FROM weekly_reviews WHERE week_start BETWEEN ? AND ?"),
+      blocks: Number((blocksR[0] as { c: number } | undefined)?.c ?? 0),
+      workouts: Number(byType.get("workout")?.n ?? 0),
+      walks: Number(byType.get("walk")?.n ?? 0),
+      clientHours: Math.round((Number(byType.get("client_minutes")?.total ?? 0) / 60) * 10) / 10,
+      projectHours: Math.round((Number(byType.get("project_minutes")?.total ?? 0) / 60) * 10) / 10,
+      journals: Number((journalsR[0] as { c: number } | undefined)?.c ?? 0),
+      reviews: Number((reviewsR[0] as { c: number } | undefined)?.c ?? 0),
     };
   }
 
