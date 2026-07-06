@@ -3,6 +3,10 @@
 Personal execution command center for Alex (CMO-level operator, Bucharest).
 Live at: value of `APP_URL` env (workers.dev domain). Owner interacts via web + Telegram.
 
+**Memory vault**: `vault/INDEX.md` is the router for Alex's cross-project context
+(clients, projects, agency, infra defaults). For client/agency/marketing tasks, read the
+router + ONE cluster file. For pure code tasks in this repo, this file is enough.
+
 ## Commands
 - `npm run dev` — local dev (auto-creates + seeds `data/alexos.db`)
 - `npm run build` — Next build. `npx tsc --noEmit` typecheck. `npx eslint src` lint.
