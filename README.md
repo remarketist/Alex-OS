@@ -67,9 +67,12 @@ npx tsc --noEmit             # typecheck
 3. Point the webhook at your deployed app:
    `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<APP_URL>/api/telegram/webhook`
    (optionally add `&secret_token=<TELEGRAM_WEBHOOK_SECRET>`).
-4. Schedule `GET /api/cron/reminders` every 5 minutes — easiest free option is
-   [cron-job.org](https://cron-job.org); a crontab
-   (`*/5 * * * * curl -s "$APP_URL/api/cron/reminders?key=$CRON_SECRET"`) works too.
+4. Nothing to schedule on Cloudflare — a built-in cron trigger (wrangler.jsonc +
+   custom-worker.js) hits `/api/cron/reminders` every 5 minutes automatically.
+   On every tick the app auto-starts due blocks (with a Telegram ping using the
+   block's own copy), asks for a completion report when a block ends, marks
+   unreported blocks missed, and sends the standalone reminders. Self-hosting
+   elsewhere? Any scheduler hitting that URL every 5 minutes works.
 5. Use **Settings → Send test** to verify. Without a token, sends are logged as `mock` so the
    entire pipeline is testable first.
 
@@ -116,9 +119,9 @@ Total cost: $0/month (Cloudflare free plan + Turso free plan).
      `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `APP_URL` (the workers.dev URL you got)
    - Redeploy (Deployments → retry) so the variables take effect
 
-**3. Reminders cron** — [cron-job.org](https://cron-job.org) (free):
-   - Create a job hitting `https://<your-worker>.workers.dev/api/cron/reminders?key=<CRON_SECRET>`
-     every 5 minutes (set `CRON_SECRET` as a Worker secret too)
+**3. Reminders** — nothing to set up: the Worker ships with a built-in cron
+   trigger that fires the reminder heartbeat every 5 minutes. Optional secrets:
+   `CRON_SECRET` (protects the endpoint) and `TIMEZONE` (default Europe/Bucharest).
 
 `supabase/migrations/0001_init.sql` is kept as a reference schema for an optional future
 Postgres/Supabase port; it is not needed for this deployment.

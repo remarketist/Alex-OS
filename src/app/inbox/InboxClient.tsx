@@ -98,7 +98,7 @@ export function InboxClient({ tasks }: { tasks: Task[] }) {
     <div>
       <PageHeader
         title="Task Inbox"
-        subtitle="Dump it messy. The system sorts it — clients, projects, jobs, body, admin."
+        subtitle="Quick capture, any moment: one thought → one categorized task. To plan a whole week with blocks and targets, use the Sprint Builder."
       />
 
       {/* Capture */}

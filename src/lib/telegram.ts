@@ -1,6 +1,7 @@
-import { q } from "./db";
-import { todayStr, nowTimeStr } from "./dates";
+import { q, batchWrite } from "./db";
+import { todayStr, nowTimeStr, todayDow, timeToMin } from "./dates";
 import { computeScore, getDayStats, saveDailyScore } from "./scoring";
+import type { WorkBlock } from "./types";
 
 /**
  * Telegram integration.
@@ -189,20 +190,70 @@ export async function handleCommand(raw: string): Promise<CommandResult> {
   };
 }
 
-/** Compute which reminders are due in the current minute window (used by the cron route). */
+/**
+ * Compute which reminders are due in the current tick window (used by the cron route).
+ * Window is (now - windowMinutes, now] — exclusive lower bound so a reminder fires
+ * exactly once when the cron runs every windowMinutes.
+ */
 export async function dueReminders(windowMinutes = 5) {
-  const now = new Date();
-  const dow = now.getDay();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const dow = todayDow();
+  const nowMin = timeToMin(nowTimeStr());
   const rows = await q("SELECT * FROM reminders WHERE enabled=1").all<{ id: number; time: string; label: string; message: string; days: string }>();
   return rows.filter((r) => {
     let days: number[] = [];
     try { days = JSON.parse(r.days); } catch { days = [0, 1, 2, 3, 4, 5, 6]; }
     if (!days.includes(dow)) return false;
-    const [h, m] = r.time.split(":").map(Number);
-    const t = h * 60 + m;
-    return t >= nowMin - windowMinutes && t <= nowMin;
+    const t = timeToMin(r.time);
+    return t > nowMin - windowMinutes && t <= nowMin;
   });
+}
+
+/**
+ * The heartbeat that makes the app feel alive. Runs on every cron tick:
+ *  - a block's start time passes → auto-activate it + ping Telegram with its mission
+ *  - a block's end time passes while it's live → ping for the completion report
+ *  - a stale live block gets marked missed when the next one starts (no proof = no credit)
+ * Nothing here requires manual "start block" clicks — the dashboard follows the clock.
+ */
+export async function processBlockTicks(windowMinutes = 5): Promise<string[]> {
+  const today = todayStr();
+  const nowMin = timeToMin(nowTimeStr());
+  const inWindow = (t: string) => {
+    const m = timeToMin(t);
+    return m > nowMin - windowMinutes && m <= nowMin;
+  };
+
+  const blocks = await q("SELECT * FROM work_blocks WHERE date=? ORDER BY start_time, sort").all<WorkBlock>(today);
+  const actions: string[] = [];
+
+  // 1. Blocks whose start just passed → activate + announce
+  const starting = blocks.filter((b) => b.status === "upcoming" && inWindow(b.start_time));
+  if (starting.length > 0) {
+    // Anything still "active" whose end already passed lost its window → missed
+    const stale = blocks.filter((b) => b.status === "active" && timeToMin(b.end_time) <= nowMin);
+    const writes = [
+      ...stale.map((b) => ({ sql: "UPDATE work_blocks SET status='missed' WHERE id=? AND status='active'", args: [b.id] as (number | string)[] })),
+      ...starting.map((b) => ({ sql: "UPDATE work_blocks SET status='active' WHERE id=? AND status='upcoming'", args: [b.id] as (number | string)[] })),
+    ];
+    await batchWrite(writes); // single round-trip, transactional
+    for (const b of starting) {
+      const copy = b.reminder_copy || `${b.goal || "Execute."} Reply DONE when it ships.`;
+      await sendTelegramMessage(`▶ ${b.start_time} — ${b.name}\n${copy}`, `block_start:${b.id}`);
+      actions.push(`start:${b.name}`);
+    }
+  }
+
+  // 2. Blocks whose end just passed while live → ask for the report
+  const ending = blocks.filter((b) => b.status === "active" && inWindow(b.end_time));
+  for (const b of ending) {
+    await sendTelegramMessage(
+      `⏱ ${b.name} just ended. Report it: reply DONE, or log output (jobs 3 / client 90 / project 60). No report = no credit.`,
+      `block_end:${b.id}`
+    );
+    actions.push(`end:${b.name}`);
+  }
+
+  return actions;
 }
 
 /** State-aware reminder copy: checks reality before nagging. */

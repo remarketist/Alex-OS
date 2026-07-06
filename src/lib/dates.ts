@@ -1,9 +1,13 @@
-// Date helpers — all dates stored as YYYY-MM-DD local strings.
+// Date helpers — all dates stored as YYYY-MM-DD strings in the app's timezone.
+// The server may run in UTC (Cloudflare Workers), so "today" and "now" are
+// always computed in TIMEZONE (default Europe/Bucharest — Alex's day).
+
+const TZ = process.env.TIMEZONE || "Europe/Bucharest";
 
 export function todayStr(offsetDays = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  return toDateStr(d);
+  const d = new Date(Date.now() + offsetDays * 86400000);
+  // en-CA formats as YYYY-MM-DD
+  return new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d);
 }
 
 export function toDateStr(d: Date): string {
@@ -51,10 +55,24 @@ export function formatDateLong(dateStr: string): string {
 }
 
 export function nowTimeStr(): string {
-  const d = new Date();
-  return `${String(d.getHours()).padStart(2, "0")}:${String(
-    d.getMinutes()
-  ).padStart(2, "0")}`;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date());
+  // en-GB gives "HH:MM"; hour "24" can appear at midnight in some runtimes
+  return parts.replace(/^24/, "00");
+}
+
+/** Current hour (0-23) in the app timezone. */
+export function nowHour(): number {
+  return parseInt(nowTimeStr().split(":")[0], 10);
+}
+
+/** Day of week (0=Sunday) for today in the app timezone. */
+export function todayDow(): number {
+  return new Date(todayStr() + "T12:00:00").getDay();
 }
 
 /** minutes since midnight for "HH:MM" */

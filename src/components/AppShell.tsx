@@ -79,6 +79,37 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* Mobile top bar — logo + secondary destinations that don't fit the bottom nav */}
+        <header className="sticky top-0 z-40 flex items-center justify-between border-b border-edge bg-raised/85 px-4 py-2.5 backdrop-blur-xl lg:hidden">
+          <Link href="/" className="flex items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 text-[13px] font-black text-[#04141a]">
+              A
+            </span>
+            <span className="text-[14px] font-bold tracking-tight">Alex OS</span>
+          </Link>
+          <div className="flex items-center gap-1">
+            {[
+              { href: "/sprint-builder", label: "Build", icon: "⟁" },
+              { href: "/journal", label: "Journal", icon: "✎" },
+              { href: "/review", label: "Review", icon: "▣" },
+              { href: "/knowledge", label: "KB", icon: "✦" },
+              { href: "/settings", label: "Settings", icon: "⚙" },
+            ].map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-label={item.label}
+                className={`flex h-9 w-9 items-center justify-center rounded-xl text-[15px] transition-colors ${
+                  pathname.startsWith(item.href)
+                    ? "bg-cyan-400/10 text-cyan-300"
+                    : "text-mute hover:bg-white/5 hover:text-ink"
+                }`}
+              >
+                {item.icon}
+              </Link>
+            ))}
+          </div>
+        </header>
         <main className="flex-1 px-4 pb-28 pt-5 sm:px-6 lg:px-8 lg:pb-10 max-w-6xl w-full mx-auto">
           {children}
         </main>

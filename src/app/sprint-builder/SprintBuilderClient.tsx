@@ -101,7 +101,7 @@ export function SprintBuilderClient({
     <div>
       <PageHeader
         title="Sprint Builder"
-        subtitle="Messy goals in. A week you can actually execute out."
+        subtitle="The weekly ritual: messy goals in → a full 7-day plan out (targets, daily blocks, Telegram schedule). For one-off thoughts during the day, use the Task Inbox."
       />
 
       {/* Stepper */}

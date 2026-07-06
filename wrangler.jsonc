@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "alexos",
-  "main": ".open-next/worker.js",
+  "main": "custom-worker.js",
   "compatibility_date": "2025-05-05",
   "compatibility_flags": ["nodejs_compat"],
 
@@ -14,10 +14,18 @@
 
   "observability": {
     "enabled": true
+  },
+
+  // The heartbeat: every 5 minutes the Worker calls its own
+  // /api/cron/reminders route (see custom-worker.js) — block start/end
+  // Telegram pings, standalone reminders, and the daily Gmail scan.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
   }
 
   // Secrets (set in Cloudflare dashboard → your Worker → Settings → Variables and Secrets):
   //   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, APP_URL,
   //   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_WEBHOOK_SECRET,
-  //   GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI, CRON_SECRET
+  //   GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI, CRON_SECRET,
+  //   TIMEZONE (optional, default Europe/Bucharest)
 }
