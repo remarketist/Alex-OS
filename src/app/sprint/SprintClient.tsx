@@ -115,7 +115,7 @@ export function SprintClient({
             <StatTile label="CEO reviews" value={aggregates.reviews} />
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <Card>
               <div className="section-title mb-3">60-day goals</div>
               <ul className="space-y-2">
@@ -156,7 +156,7 @@ export function SprintClient({
 
       {editing && (
         <Card>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <label className="label">Sprint name</label>
               <input className="field" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />

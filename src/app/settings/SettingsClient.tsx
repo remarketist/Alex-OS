@@ -71,6 +71,32 @@ export function SettingsClient({
     router.refresh();
   };
 
+  const [webhookMsg, setWebhookMsg] = useState<string | null>(null);
+  const setupWebhook = async () => {
+    setWebhookMsg("Working…");
+    const res = await fetch("/api/telegram/setup-webhook", { method: "POST" });
+    const j = await res.json();
+    setWebhookMsg(j.ok ? "Replies enabled. Text your bot 'today' to try it." : `Failed: ${j.error || "unknown"}`);
+    setTimeout(() => setWebhookMsg(null), 6000);
+  };
+
+  const [beatMsg, setBeatMsg] = useState<string | null>(null);
+  const runHeartbeat = async () => {
+    setBeatMsg("Running…");
+    const res = await fetch("/api/cron/reminders", { method: "GET" });
+    const j = await res.json().catch(() => ({}));
+    const acted = [...(j.blockActions ?? []), ...(j.sent ?? [])];
+    setBeatMsg(
+      j.ok
+        ? acted.length
+          ? `Fired: ${acted.join(", ")}. Check Telegram.`
+          : "Heartbeat ran. Nothing due this minute — pings fire at each block's start/end time."
+        : `Failed: ${j.error || "unknown"}`
+    );
+    setTimeout(() => setBeatMsg(null), 8000);
+    router.refresh();
+  };
+
   const saveGmailSettings = async () => {
     // Reuse knowledge route pattern? Gmail settings live on gmail_connections — use a dedicated call
     await fetch("/api/gmail/settings", {
@@ -99,13 +125,13 @@ export function SettingsClient({
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
 
   return (
-    <div>
+    <div className="min-w-0">
       <PageHeader title="Settings" subtitle="Integrations, scoring, and the reminder engine." />
       {savedMsg && (
         <div className="mb-4 rounded-xl border border-emerald-400/25 bg-emerald-400/5 px-3.5 py-2 text-[12.5px] text-emerald-200 fade-up">{savedMsg}</div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Telegram */}
         <Card>
           <div className="mb-3 flex items-center justify-between">
@@ -115,35 +141,44 @@ export function SettingsClient({
             </span>
           </div>
           <p className="text-[12px] leading-relaxed text-mute">
-            1. Create a bot with <span className="font-mono text-ink">@BotFather</span> → set <span className="font-mono text-ink">TELEGRAM_BOT_TOKEN</span> in .env.
-            2. Message your bot, get your chat ID from <span className="font-mono text-ink">getUpdates</span>, paste it below.
-            3. Point the webhook at <span className="font-mono text-ink">/api/telegram/webhook</span> and schedule <span className="font-mono text-ink">/api/cron/reminders</span> every 5 min.
+            Paste your chat ID, keep reminders on, and hit <span className="text-ink">Send test</span>.
+            Then <span className="text-ink">Enable replies</span> so texting the bot (DONE, jobs 3, smoked 2)
+            updates the app. Pings fire automatically at each block&apos;s start and end time.
           </p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
-            <input className="field font-mono" placeholder="Chat ID e.g. 123456789" value={chatId} onChange={(e) => setChatId(e.target.value)} />
-            <button onClick={() => patchSettings({ telegram_chat_id: chatId, telegram_enabled: tgEnabled ? 1 : 0 })} className="btn btn-primary">Save</button>
-            <button onClick={testTelegram} className="btn btn-ghost">Send test</button>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input className="field min-w-0 font-mono" placeholder="Chat ID e.g. 123456789" value={chatId} onChange={(e) => setChatId(e.target.value)} />
+            <div className="flex gap-2">
+              <button onClick={() => patchSettings({ telegram_chat_id: chatId, telegram_enabled: tgEnabled ? 1 : 0 })} className="btn btn-primary flex-1 sm:flex-none">Save</button>
+              <button onClick={testTelegram} className="btn btn-ghost flex-1 sm:flex-none">Send test</button>
+            </div>
           </div>
           <label className="mt-2.5 flex items-center gap-2 text-[12.5px] text-mute">
             <input type="checkbox" checked={tgEnabled} onChange={(e) => setTgEnabled(e.target.checked)} className="accent-cyan-400" />
             Reminders enabled
           </label>
-          {testResult && <p className="mt-2 text-[12px] text-cyan-200">{testResult}</p>}
+          {testResult && <p className="mt-2 break-words text-[12px] text-cyan-200">{testResult}</p>}
+
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <button onClick={setupWebhook} className="btn btn-ghost text-[12.5px]">Enable replies (set webhook)</button>
+            <button onClick={runHeartbeat} className="btn btn-ghost text-[12.5px]">Run heartbeat now</button>
+          </div>
+          {webhookMsg && <p className="mt-2 break-words text-[12px] text-cyan-200">{webhookMsg}</p>}
+          {beatMsg && <p className="mt-2 break-words text-[12px] text-cyan-200">{beatMsg}</p>}
 
           <div className="mt-4 border-t border-white/5 pt-3">
             <div className="section-title mb-2">Command console — same parser as the bot</div>
             <div className="flex gap-2">
               <input
-                className="field font-mono text-[13px]"
-                placeholder="today · jobs 3 · smoked 2 · derail · score"
+                className="field min-w-0 font-mono text-[13px]"
+                placeholder="today · jobs 3 · score"
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && runCommand()}
               />
-              <button onClick={runCommand} className="btn btn-ghost">Run</button>
+              <button onClick={runCommand} className="btn btn-ghost shrink-0">Run</button>
             </div>
             {commandReply && (
-              <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-white/5 bg-black/30 px-3 py-2 font-mono text-[11.5px] text-cyan-100">{commandReply}</pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg border border-white/5 bg-black/30 px-3 py-2 font-mono text-[11.5px] text-cyan-100">{commandReply}</pre>
             )}
             {tgMessages.length > 0 && (
               <div className="mt-3 max-h-44 space-y-1 overflow-y-auto">
@@ -173,7 +208,7 @@ export function SettingsClient({
             Read-only scan for application confirmations and recruiter replies.
             This app never sends, deletes, archives, or modifies email.
           </p>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
             {gmail?.status === "connected" ? (
               <button onClick={disconnectGmail} className="btn btn-danger">Disconnect</button>
             ) : (
@@ -185,8 +220,8 @@ export function SettingsClient({
               </a>
             )}
             {!gmailEnvSet && (
-              <span className="self-center text-[11.5px] text-amber-300/90">
-                Set GMAIL_CLIENT_ID / SECRET / REDIRECT_URI in .env first — demo sync works meanwhile.
+              <span className="break-words text-[11.5px] text-amber-300/90">
+                Set GMAIL_CLIENT_ID / SECRET / REDIRECT_URI in the Worker first — demo sync works meanwhile.
               </span>
             )}
           </div>
@@ -260,10 +295,10 @@ export function SettingsClient({
           <div className="section-title mb-3">Reminder schedule</div>
           <div className="space-y-2">
             {reminders.map((r) => (
-              <div key={r.id} className="flex items-center gap-2.5 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2">
+              <div key={r.id} className="flex min-w-0 items-center gap-2.5 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2">
                 <input
                   type="time"
-                  className="field !w-auto !py-1 font-mono text-[12px]"
+                  className="field shrink-0 !w-[92px] !py-1 font-mono text-[12px]"
                   defaultValue={r.time}
                   onBlur={(e) => patchReminder(r.id, { time: e.target.value })}
                 />
@@ -285,8 +320,8 @@ export function SettingsClient({
             ))}
           </div>
           <p className="mt-3 text-[11px] leading-relaxed text-faint">
-            Reminders fire via <span className="font-mono">/api/cron/reminders</span> — schedule it every 5 minutes (Vercel cron or crontab).
-            Copy is state-aware: it checks what you&apos;ve actually logged before it pings you.
+            The Cloudflare Worker fires <span className="font-mono">/api/cron/reminders</span> automatically every 5 minutes —
+            no setup. Copy is state-aware: it checks what you&apos;ve actually logged before it pings you.
           </p>
         </Card>
       </div>

@@ -118,7 +118,7 @@ export function JobsClient({
         </Card>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* CRM table */}
         <div className="lg:col-span-2">
           <div className="mb-2.5 flex flex-wrap items-center gap-1.5">

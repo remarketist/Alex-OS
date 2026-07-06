@@ -267,7 +267,7 @@ function FitnessTab({ fitness, onSave }: { fitness: FitnessProfile; onSave: (b: 
   const [saved, setSaved] = useState(false);
   return (
     <Card>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="sm:col-span-2"><label className="label">Current goal</label><textarea className="field min-h-[56px]" value={f.goal} onChange={(e) => setF({ ...f, goal: e.target.value })} /></div>
         <div><label className="label">Workout type</label><textarea className="field min-h-[56px]" value={f.workout_type} onChange={(e) => setF({ ...f, workout_type: e.target.value })} /></div>
         <div><label className="label">Constraints</label><textarea className="field min-h-[56px]" value={f.constraints} onChange={(e) => setF({ ...f, constraints: e.target.value })} /></div>
@@ -298,7 +298,7 @@ function RulesTab({ rules, onSave, onDelete }: { rules: AssistantRule[]; onSave:
     <div className="space-y-3">
       <Card className="!p-4">
         <div className="section-title mb-2">Add rule</div>
-        <div className="grid gap-2 sm:grid-cols-[1fr_2fr_auto_auto]">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_2fr_auto_auto]">
           <input className="field" placeholder="Rule name" value={name} onChange={(e) => setName(e.target.value)} />
           <input className="field" placeholder="What should the assistant do?" value={description} onChange={(e) => setDescription(e.target.value)} />
           <select className="field !w-auto" value={domain} onChange={(e) => setDomain(e.target.value)}>
@@ -355,7 +355,7 @@ function AliasesTab({
     <div className="space-y-3">
       <Card className="!p-4">
         <div className="section-title mb-2">Add alias — “what you say” → “what the system hears”</div>
-        <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
           <input className="field" placeholder={`e.g. "the health thing"`} value={alias} onChange={(e) => setAlias(e.target.value)} />
           <select className="field" value={target} onChange={(e) => setTarget(e.target.value)}>
             <option value="">— target —</option>
@@ -378,7 +378,7 @@ function AliasesTab({
           Client/project names and their built-in aliases are matched automatically — this list is for extra shorthand.
         </p>
       </Card>
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {aliases.map((a) => (
           <Card key={a.id} className="!p-3 flex items-center justify-between gap-2">
             <div className="text-[13px]">

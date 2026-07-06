@@ -109,7 +109,7 @@ export function ReviewClient({
         <StatTile label="Blocks done" value={s.blocks_completed} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
         {/* Numbers vs targets */}
         <Card className="lg:col-span-3">
           <div className="section-title mb-3">The numbers — actual vs target</div>

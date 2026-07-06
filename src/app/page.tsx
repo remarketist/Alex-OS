@@ -102,7 +102,7 @@ export default async function CommandCenter() {
       </div>
 
       {/* Top row: score / now / targets */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {/* Score */}
         <Card className="flex items-center gap-5">
           <ScoreRing score={ctx.score.score} level={ctx.score.level} size={110} />
@@ -188,7 +188,7 @@ export default async function CommandCenter() {
         />
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
         {/* Timeline */}
         <Card className="lg:col-span-3">
           <div className="mb-3 flex items-center justify-between">

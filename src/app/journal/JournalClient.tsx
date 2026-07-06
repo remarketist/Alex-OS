@@ -62,7 +62,7 @@ export function JournalClient({
         subtitle="Five lines. No performance. It feeds the reviews."
       />
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <div className="space-y-4">
             {PROMPTS.map(([key, label, placeholder]) => (

@@ -150,7 +150,7 @@ export function HabitsClient({
         </div>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Smoking trend */}
         <Card>
           <div className="mb-3 flex items-baseline justify-between">

@@ -127,7 +127,7 @@ export function SprintBuilderClient({
 
       {/* Step 0: messy capture */}
       {step === 0 && (
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Card className="lg:col-span-2">
             <div className="section-title mb-2">What does this week need to produce?</div>
             <textarea
@@ -247,7 +247,7 @@ export function SprintBuilderClient({
               <button onClick={() => setStep(4)} className="btn btn-primary text-[13px]">Review & activate →</button>
             </div>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {plan.days.map((d, di) => (
               <Card key={d.date} className="!p-4">
                 <div className="mb-1 flex items-baseline justify-between">
