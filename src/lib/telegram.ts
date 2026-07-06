@@ -20,22 +20,39 @@ export async function getTelegramConfig() {
   return { token, chatId, enabled: !!settings?.telegram_enabled, configured: !!(token && chatId) };
 }
 
-/** Hermes-ready: send a message to Alex via Telegram (or log as mock if unconfigured). */
-export async function sendTelegramMessage(text: string, command = ""): Promise<{ ok: boolean; mock: boolean; error?: string }> {
+/** The app's public base URL, read from APP_URL (no trailing slash). Empty if unset. */
+export function appBaseUrl(): string {
+  return (process.env.APP_URL || "").replace(/\/$/, "");
+}
+
+/** A tappable "open the app" line for a specific page, or "" if APP_URL isn't set. */
+export function appLink(path = "/"): string {
+  const base = appBaseUrl();
+  if (!base) return "";
+  return `\n\n📲 ${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/**
+ * Hermes-ready: send a message to Alex via Telegram (or log as mock if unconfigured).
+ * Pass `linkPath` (e.g. "/planner", "/jobs") to append a tappable deep link so Alex
+ * can jump straight into the app from the chat.
+ */
+export async function sendTelegramMessage(text: string, command = "", linkPath?: string): Promise<{ ok: boolean; mock: boolean; error?: string }> {
   const { token, chatId, configured } = await getTelegramConfig();
+  const fullText = linkPath !== undefined ? text + appLink(linkPath) : text;
   if (!configured) {
-    await q("INSERT INTO telegram_messages (direction, text, command, status) VALUES ('out', ?, ?, 'mock')").run(text, command);
+    await q("INSERT INTO telegram_messages (direction, text, command, status) VALUES ('out', ?, ?, 'mock')").run(fullText, command);
     return { ok: true, mock: true };
   }
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({ chat_id: chatId, text: fullText, disable_web_page_preview: true }),
     });
     const ok = res.ok;
     await q("INSERT INTO telegram_messages (direction, text, command, status) VALUES ('out', ?, ?, ?)").run(
-      text, command, ok ? "sent" : "failed"
+      fullText, command, ok ? "sent" : "failed"
     );
     if (!ok) {
       const body = await res.text();
@@ -43,7 +60,7 @@ export async function sendTelegramMessage(text: string, command = ""): Promise<{
     }
     return { ok: true, mock: false };
   } catch (e) {
-    await q("INSERT INTO telegram_messages (direction, text, command, status) VALUES ('out', ?, ?, 'failed')").run(text, command);
+    await q("INSERT INTO telegram_messages (direction, text, command, status) VALUES ('out', ?, ?, 'failed')").run(fullText, command);
     return { ok: false, mock: false, error: String(e) };
   }
 }
@@ -238,7 +255,7 @@ export async function processBlockTicks(windowMinutes = 5): Promise<string[]> {
     await batchWrite(writes); // single round-trip, transactional
     for (const b of starting) {
       const copy = b.reminder_copy || `${b.goal || "Execute."} Reply DONE when it ships.`;
-      await sendTelegramMessage(`▶ ${b.start_time} — ${b.name}\n${copy}`, `block_start:${b.id}`);
+      await sendTelegramMessage(`▶ ${b.start_time} — ${b.name}\n${copy}`, `block_start:${b.id}`, blockLinkPath(b));
       actions.push(`start:${b.name}`);
     }
   }
@@ -248,12 +265,20 @@ export async function processBlockTicks(windowMinutes = 5): Promise<string[]> {
   for (const b of ending) {
     await sendTelegramMessage(
       `⏱ ${b.name} just ended. Report it: reply DONE, or log output (jobs 3 / client 90 / project 60). No report = no credit.`,
-      `block_end:${b.id}`
+      `block_end:${b.id}`,
+      blockLinkPath(b)
     );
     actions.push(`end:${b.name}`);
   }
 
   return actions;
+}
+
+/** Where a block ping should deep-link: evening review → end-of-day flow, else the planner. */
+function blockLinkPath(b: WorkBlock): string {
+  if (b.domain === "journal") return "/end-day";
+  if (b.domain === "jobs") return "/jobs";
+  return "/planner";
 }
 
 /** State-aware reminder copy: checks reality before nagging. */

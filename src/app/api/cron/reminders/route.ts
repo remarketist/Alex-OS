@@ -29,7 +29,9 @@ export async function GET(req: NextRequest) {
   const sent: string[] = [];
   for (const r of due) {
     const text = await stateAwareReminder(r.label, r.message);
-    await sendTelegramMessage(text, "reminder");
+    const l = r.label.toLowerCase();
+    const path = l.includes("job") ? "/jobs" : l.includes("review") || l.includes("evening") ? "/end-day" : "/planner";
+    await sendTelegramMessage(text, "reminder", path);
     sent.push(r.label);
   }
 

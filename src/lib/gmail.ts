@@ -225,7 +225,7 @@ export async function runGmailSync(mode: "manual" | "scheduled" | "demo"): Promi
       const result = await upsertDetection(e, d);
       if (result === "added" || result === "queued") detected++;
       if (result === "updated" && d.replyType && d.replyType !== "Follow-up Needed") {
-        await sendTelegramMessage(`Job update detected: ${d.company} — ${d.role || "role"}. Type: ${d.replyType}. Open in Alex OS.`, "job_alert");
+        await sendTelegramMessage(`Job update detected: ${d.company} — ${d.role || "role"}. Type: ${d.replyType}.`, "job_alert", "/jobs");
       }
     }
     notes = `Query: ${query}`;
@@ -333,7 +333,7 @@ async function runDemoSync(): Promise<{ scanned: number; detected: number }> {
     const result = await upsertDetection(e, d);
     if (result === "added" || result === "queued") detected++;
     if (result === "updated" && d.replyType) {
-      await sendTelegramMessage(`Job update detected: ${d.company} — ${d.role || "role"}. Type: ${d.replyType}. Open in Alex OS.`, "job_alert");
+      await sendTelegramMessage(`Job update detected: ${d.company} — ${d.role || "role"}. Type: ${d.replyType}.`, "job_alert", "/jobs");
     }
   }
   return { scanned: demo.length, detected };
