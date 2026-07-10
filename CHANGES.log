@@ -1,0 +1,23 @@
+# CHANGES.log
+
+Chronological state record for cross-tool handoff (Claude Code <-> OpenAI Codex).
+Newest at the bottom. The Stop hook writes factual lines; the AI session appends a
+one-sentence summary + a **NEXT STEP REQUIREMENT:** line for meaningful work.
+Install the hook that maintains this file: alex-agentos/handoff/install-handoff.sh
+
+- 2026-07-05 6e530c0 Initial commit
+- 2026-07-04 c20f35a Build Alex OS v1: execution command center
+- 2026-07-05 e15e759 Port to Cloudflare Workers + Turso for free hosting
+- 2026-07-05 b73a39c Update wrangler.jsonc
+- 2026-07-05 0439bbb Fix Cloudflare subrequest cap: batch all Turso round-trips
+- 2026-07-05 a6ba58c Merge workers_dev setting from Cloudflare dashboard
+- 2026-07-05 d6caf78 Match wrangler worker name to deployed worker (alexos)
+- 2026-07-06 f1e66df Make the app alive: built-in cron heartbeat, block auto-advance, TZ fix, mobile nav
+- 2026-07-06 eb230a2 Mobile UX + one-click Telegram: dropdown nav, fix settings overflow, webhook button
+- 2026-07-06 08e5845 Add tappable app deep-links to Telegram messages
+- 2026-07-06 f95ec98 Add agent infrastructure: CLAUDE.md memory, verify-app skill, Jarvis blueprint, NEXT.md handoff
+- 2026-07-06 10e5a94 Add clustered memory vault (vault/) — token-efficient cross-session context
+- 2026-07-07 4f863aa Add alex-agentos: Claude Code agent library for the AI agency
+
+- 2026-07-10 Built the cross-tool handoff system (Stop hook + installer + AGENTS.md) and seeded these logs.
+  **NEXT STEP REQUIREMENT:** On your Mac, run `bash alex-agentos/handoff/install-handoff.sh` once to activate the global hook, then verify CHANGES.log updates after a change in any repo.

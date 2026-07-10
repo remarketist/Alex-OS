@@ -46,3 +46,4 @@ data/
 # cloudflare build output
 .open-next/
 .wrangler/
+.claude-handoff-state

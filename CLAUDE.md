@@ -60,6 +60,14 @@ router + ONE cluster file. For pure code tasks in this repo, this file is enough
 `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
 `TELEGRAM_WEBHOOK_SECRET?`, `GMAIL_CLIENT_ID/SECRET/REDIRECT_URI`, `CRON_SECRET?`, `TIMEZONE?`, `ANTHROPIC_API_KEY?`.
 
+## Cross-tool handoff (Claude Code ⇄ Codex)
+- `AGENTS.md` is the Codex-facing mirror of this file — keep them in sync when rules change.
+- `CHANGES.log` is the running state record. On start, read its bottom entries (what the last
+  session did + the NEXT STEP). On finishing meaningful work, append a one-sentence summary +
+  a `**NEXT STEP REQUIREMENT:**` line.
+- A Stop hook (`alex-agentos/handoff/`) records file-level changes automatically once installed
+  locally (`bash alex-agentos/handoff/install-handoff.sh`); the AI adds the semantic summary.
+
 ## Current state / phase 2 backlog
 Working: all pages, heartbeat pings, Telegram commands via webhook, demo Gmail pipeline, scoring/adaptation/reviews.
 Pending user config: real Gmail OAuth creds. Phase 2: AI-assisted planning (`src/lib/ai.ts` is wired, needs key),
